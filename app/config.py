@@ -1,9 +1,41 @@
+import os
+from pathlib import Path
+
 from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class ConfigError(Exception):
     """Raised when required configuration is missing or invalid."""
+
+
+def _load_dotenv_into_environ(path: str = ".env") -> None:
+    """Mirrors Go's loadDotEnv (internal/config/config.go): parses .env and
+    calls os.environ.setdefault for every key, so an existing env var always
+    wins over the file (matches Go's `if _, exists := os.LookupEnv(key);
+    exists { continue }`).
+
+    Needed because pydantic_settings' BaseSettings(env_file=...) only loads
+    .env into its own model fields — it never touches os.environ. app/
+    pdfextract.py and app/llamaparse.py read LLAMA_CLOUD_API_KEY,
+    LLAMA_CLOUD_BASE_URL, and LLAMAPARSE_TIER via os.environ.get(...)
+    directly (mirroring Go's os.Getenv calls in those same packages, per
+    docs/PYTHON_INTERFACES.md — deliberately not plumbed through Settings),
+    so without this those three vars are silently invisible no matter what
+    .env says, and pdfextract silently falls back to pypdf forever.
+    """
+    p = Path(path)
+    if not p.is_file():
+        return
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip().strip('"')
+        if key:
+            os.environ.setdefault(key, val)
 
 
 class Settings(BaseSettings):
@@ -36,6 +68,7 @@ class Settings(BaseSettings):
 def load_config() -> Settings:
     """Equivalent of Go's config.Load(). Raises ConfigError (wrapping pydantic's
     ValidationError) if HANDBOOK_PATH or DATABASE_URL is missing."""
+    _load_dotenv_into_environ()
     try:
         return Settings()
     except ValidationError as e:
