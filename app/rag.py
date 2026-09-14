@@ -171,14 +171,14 @@ class RagService:
         collection: str,
         top_k: int,
         pdf_path: str,
-        chunk_words: int = 0,
+        chunk_words: int = 180,
     ) -> None:
-        """chunk_words defaults to 0, matching Go's NewService (which leaves the
-        struct field at its zero value) — chunk.build already treats <= 0 as a
-        fallback to 350 words/chunk, so this single constructor covers both of
-        Go's NewService (chunk_words unset -> 350 via fallback) and
-        NewServiceWithParams (chunk_words explicit, e.g. 180) without porting
-        two separate constructor functions."""
+        """chunk_words defaults to 180, matching Go's NewService (which hardcodes
+        chunkWords: 180 — see internal/rag/service.go). Every real Go caller
+        (cmd/server, cmd/ingest) goes through NewService, so 180 is the true
+        production default; chunk.build's own <= 0 -> 350 fallback is dead code
+        on that path and only matters if a caller passes chunk_words <= 0
+        explicitly (e.g. NewServiceWithParams(0, ...) never appears in Go)."""
         self._store = store
         self._embed_client = embed_client
         self._collection = collection

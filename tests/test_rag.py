@@ -171,6 +171,23 @@ def test_set_query_rewriter_clears_when_api_key_or_model_blank():
 # --- ingest ---
 
 
+def test_default_chunk_words_matches_go_production_default():
+    # Go's cmd/server and cmd/ingest both construct via rag.NewService, which
+    # hardcodes chunkWords: 180 (internal/rag/service.go). A caller that omits
+    # chunk_words — app/cli/ingest.py, app/main.py's bootstrap() — must get the
+    # same 180, not chunk.build's unrelated <= 0 -> 350 fallback. Construct
+    # RagService directly (not via make_service, which always overrides
+    # chunk_words=180 explicitly and so would mask a regression here).
+    svc = RagService(
+        store=AsyncMock(),
+        embed_client=AsyncMock(),
+        collection="handbook_chunks",
+        top_k=10,
+        pdf_path="/tmp/fake.pdf",
+    )
+    assert svc._chunk_words == 180
+
+
 async def test_ingest_extracts_chunks_embeds_and_upserts(monkeypatch):
     embed_client = AsyncMock()
     embed_client.embed.return_value = [0.1, 0.2]
