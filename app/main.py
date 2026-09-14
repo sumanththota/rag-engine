@@ -396,10 +396,20 @@ def create_app(
     return app
 
 
-def bootstrap() -> FastAPI:
+async def bootstrap() -> FastAPI:
     """Production wiring — equivalent of Go's main(). Only invoked when run
     as a script/ASGI factory, never at import time, so `app.main` stays
-    importable (and route logic testable) without live Postgres/Ollama."""
+    importable (and route logic testable) without live Postgres/Ollama.
+
+    Async (not sync) on purpose: asyncpg.create_pool()'s returned Pool needs
+    a *running* event loop to connect. The old sync version wrapped just the
+    pool creation in its own asyncio.run(...) — that loop is closed the
+    instant asyncio.run() returns, so the pool's connections were bound to a
+    loop that no longer existed by the time uvicorn's *own* asyncio.run()
+    (inside uvicorn.run()) later tried to use them, failing with
+    ConnectionDoesNotExistError on first real request. Pool creation and
+    request handling now share one event loop end to end — see __main__.
+    """
     import asyncpg
 
     settings = load_config()
@@ -412,7 +422,9 @@ def bootstrap() -> FastAPI:
     )
 
     embed_client = OllamaClient(settings.ollama_host)
-    pool = asyncio.run(asyncpg.create_pool(dsn=settings.database_url, command_timeout=30, timeout=10))
+    pool = await asyncpg.create_pool(
+        dsn=settings.database_url, command_timeout=30, timeout=10
+    )
     store = PostgresStore(pool)
     rag_service = RagService(
         store=store,
@@ -453,5 +465,11 @@ def bootstrap() -> FastAPI:
 if __name__ == "__main__":
     import uvicorn
 
-    application = bootstrap()
-    uvicorn.run(application, host="0.0.0.0", port=int(application.state.settings.port))
+    async def _serve() -> None:
+        application = await bootstrap()
+        config = uvicorn.Config(
+            application, host="0.0.0.0", port=int(application.state.settings.port)
+        )
+        await uvicorn.Server(config).serve()
+
+    asyncio.run(_serve())
