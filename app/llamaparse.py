@@ -48,7 +48,11 @@ async def extract_pages(api_key: str, pdf_path: str, tier: str = "cost_effective
     base = _base_url()
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        # follow_redirects=True: Go's http.Client{} (zero value, used by
+        # internal/llamaparse/client.go) follows redirects by default; httpx
+        # does not. Without this, a 307 from LlamaCloud's upload endpoint
+        # surfaces as a hard LlamaParseError instead of being followed.
+        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
             file_id = await _upload_file(client, base, api_key, pdf_path)
             job_id = await _start_parse_job(client, base, api_key, file_id, tier)
     except LlamaParseError:
@@ -153,7 +157,7 @@ async def _poll_parse_job(base: str, api_key: str, job_id: str) -> list[Page]:
     url = f"{base}/api/v2/parse/{job_id}?expand=markdown"
 
     async with asyncio.timeout(_POLL_TIMEOUT_SECONDS):
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
             while True:
                 try:
                     resp = await client.get(url, headers=headers)
