@@ -22,6 +22,7 @@ string that no longer applies.
 import base64
 import json
 import logging
+import re
 
 import asyncpg
 from fastapi import FastAPI
@@ -29,6 +30,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.embed import OllamaClient
 from app.llm import OpenAICompatibleClient
+from app.logging_utils import install_trace_id_filter, trace_id_var
 from app.main import create_app
 from app.rag import RagService
 from app.store import PostgresStore
@@ -79,6 +81,13 @@ def _extract_sse_data(body: str, event: str) -> str:
     rest = body[idx + len(marker):]
     end = rest.find("\n")
     return rest if end == -1 else rest[:end]
+
+
+def _extract_trace_id_from_start_body(body: str) -> str:
+    # window.startAnswerStream("<question>","<model_id>","<started_at_ms>","<trace_id>")
+    match = re.search(r'window\.startAnswerStream\("[^"]*","[^"]*","[^"]*","([^"]*)"\)', body)
+    assert match, f"trace_id not found in chat_start body: {body}"
+    return match.group(1)
 
 
 async def test_handle_health_live():
@@ -219,3 +228,91 @@ async def test_handle_chat_start_logs_carry_http_stage(caplog):
     assert resp.status_code == 200
     http_records = [r for r in caplog.records if getattr(r, "stage", None) == "http"]
     assert http_records, "expected at least one log record with stage=http"
+
+
+# ---- Ticket 3: trace_id correlation across /chat/start -> /chat/stream ----
+#
+# install_trace_id_filter() must run before these assertions mean anything:
+# without it, `record.trace_id` is never populated (stays unset/None via
+# JsonFormatter's getattr fallback) regardless of whether the ContextVar
+# itself is set correctly, which would let a broken wiring pass silently.
+# We call it directly (not the full configure_logging()) because
+# configure_logging() also does `root_logger.handlers.clear()`, which would
+# rip out caplog's own handler mid-test.
+
+
+async def test_trace_id_correlates_chat_start_and_chat_stream(caplog):
+    install_trace_id_filter()
+    svc = await _unreachable_rag_service()
+    # Needs a configured provider client + API key to get far enough into
+    # chat_stream to reach the "stream start" log line and the streaming
+    # body (retrieval then fails against the unreachable store/embedder,
+    # emitting a stage=retrieve log too) — same setup as
+    # test_handle_chat_stream_dependency_unavailable_emits_streamerror.
+    provider_clients = {"groq": OpenAICompatibleClient("http://127.0.0.1:1")}
+    api_keys = {"GROQ_API_KEY": "test-key"}
+
+    with caplog.at_level(logging.INFO):
+        async with _async_client(_app_for(svc, provider_clients, api_keys)) as client:
+            start_resp = await client.post(
+                "/chat/start",
+                data={"question": "hi", "model_id": "groq_llama31_8b"},
+            )
+            assert start_resp.status_code == 200
+            trace_id = _extract_trace_id_from_start_body(start_resp.text)
+
+            stream_resp = await client.get(
+                "/chat/stream",
+                params={"question": "hi", "model_id": "groq_llama31_8b", "trace_id": trace_id},
+            )
+            assert stream_resp.status_code == 200
+
+    turn_records = [
+        r for r in caplog.records
+        if getattr(r, "stage", None) in ("http", "retrieve", "generate")
+    ]
+    assert turn_records, "expected log records from the chat turn"
+
+    trace_ids_seen = {getattr(r, "trace_id", None) for r in turn_records}
+    assert trace_ids_seen == {trace_id}, (
+        f"expected every chat-turn log record to carry trace_id={trace_id!r}, "
+        f"saw {trace_ids_seen!r}"
+    )
+
+    # Make sure we actually exercised both HTTP calls' own log lines, not
+    # just one of them.
+    assert any(
+        getattr(r, "stage", None) == "http" and "chat start" in r.getMessage()
+        for r in turn_records
+    ), "expected a log line from chat_start"
+    assert any(
+        getattr(r, "stage", None) == "http" and "stream start" in r.getMessage()
+        for r in turn_records
+    ), "expected a log line from chat_stream"
+    assert any(
+        getattr(r, "stage", None) == "retrieve" for r in turn_records
+    ), "expected the retrieval-failure log line emitted deep inside event_stream()"
+
+
+async def test_trace_id_does_not_leak_across_unrelated_requests():
+    install_trace_id_filter()
+    svc = await _unreachable_rag_service()
+    async with _async_client(_app_for(svc)) as client:
+        resp1 = await client.post(
+            "/chat/start", data={"question": "first", "model_id": "groq_llama31_8b"}
+        )
+        resp2 = await client.post(
+            "/chat/start", data={"question": "second", "model_id": "groq_llama31_8b"}
+        )
+
+    assert resp1.status_code == 200 and resp2.status_code == 200
+    trace_id_1 = _extract_trace_id_from_start_body(resp1.text)
+    trace_id_2 = _extract_trace_id_from_start_body(resp2.text)
+
+    assert trace_id_1 != trace_id_2
+
+    # The real proof the ContextVar was reset (not just overwritten): back
+    # at module level, outside of any request handling, nothing should
+    # still be set. If chat_start() forgot to reset, this would show
+    # trace_id_2 here instead of None.
+    assert trace_id_var.get() is None

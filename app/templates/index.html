@@ -1083,7 +1083,7 @@
     });
   }
 
-  window.startAnswerStream = function (encodedQuestion, encodedModelID, encodedStartedAtMs) {
+  window.startAnswerStream = function (encodedQuestion, encodedModelID, encodedStartedAtMs, encodedTraceId) {
     const target = document.getElementById("assistant-last");
     if (!target) return;
 
@@ -1099,7 +1099,7 @@
     try { saveState(state); } catch (e) {}
     renderThreadList();
 
-    const source = new EventSource("/chat/stream?question=" + encodedQuestion + "&model_id=" + encodedModelID + "&started_at_ms=" + encodedStartedAtMs);
+    const source = new EventSource("/chat/stream?question=" + encodedQuestion + "&model_id=" + encodedModelID + "&started_at_ms=" + encodedStartedAtMs + "&trace_id=" + encodedTraceId);
     activeStream = source;
     setActivity("Streaming…");
     setStreamingUi(true);

@@ -28,11 +28,12 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from starlette.background import BackgroundTask
 
 from app.config import Settings, load_config
 from app.embed import OllamaClient
 from app.llm import OpenAICompatibleClient
-from app.logging_utils import configure_logging
+from app.logging_utils import configure_logging, new_trace_id, trace_id_var
 from app.rag import RagService
 from app.store import PostgresStore
 
@@ -272,130 +273,176 @@ def create_app(
 
     @app.post("/chat/start")
     async def chat_start(request: Request):
-        req_id = new_req_id()
-        started_at_ms = int(time.time() * 1000)
+        # One trace_id per chat turn, threaded through to /chat/stream via
+        # the rendered <script> call below — see logging_utils.trace_id_var.
+        # Set/reset is safe as a plain try/finally here (unlike chat_stream,
+        # this handler has no StreamingResponse to outlive its own return).
+        trace_id = new_trace_id()
+        token = trace_id_var.set(trace_id)
+        try:
+            started_at_ms = int(time.time() * 1000)
 
-        form = await request.form()
-        question = str(form.get("question", "")).strip()
-        model_id = str(form.get("model_id", "")).strip()
+            form = await request.form()
+            question = str(form.get("question", "")).strip()
+            model_id = str(form.get("model_id", "")).strip()
 
-        if not question:
-            return PlainTextResponse("question is required", status_code=400)
-        if model_id not in MODEL_CONFIGS:
-            return PlainTextResponse("invalid model selection", status_code=400)
+            if not question:
+                return PlainTextResponse("question is required", status_code=400)
+            if model_id not in MODEL_CONFIGS:
+                return PlainTextResponse("invalid model selection", status_code=400)
 
-        logger.info(
-            "[http][%s] chat start question_chars=%d model_id=%s",
-            req_id, len(question), model_id, extra={"stage": "http"},
-        )
+            logger.info(
+                "chat start question_chars=%d model_id=%s",
+                len(question), model_id, extra={"stage": "http"},
+            )
 
-        escaped_question = html.escape(question)
-        escaped_query = urllib.parse.quote_plus(question)
-        escaped_model_id = urllib.parse.quote_plus(model_id)
-        escaped_started_at = urllib.parse.quote_plus(str(started_at_ms))
+            escaped_question = html.escape(question)
+            escaped_query = urllib.parse.quote_plus(question)
+            escaped_model_id = urllib.parse.quote_plus(model_id)
+            escaped_started_at = urllib.parse.quote_plus(str(started_at_ms))
+            escaped_trace_id = urllib.parse.quote_plus(trace_id)
 
-        body = (
-            f'<div class="msg user">{escaped_question}</div>'
-            f'<div class="msg assistant raw" id="assistant-last" data-streaming="1"></div>'
-            f'<script>window.startAnswerStream("{escaped_query}","{escaped_model_id}","{escaped_started_at}");</script>'
-        )
-        return HTMLResponse(body)
+            body = (
+                f'<div class="msg user">{escaped_question}</div>'
+                f'<div class="msg assistant raw" id="assistant-last" data-streaming="1"></div>'
+                f'<script>window.startAnswerStream("{escaped_query}","{escaped_model_id}","{escaped_started_at}","{escaped_trace_id}");</script>'
+            )
+            return HTMLResponse(body)
+        finally:
+            trace_id_var.reset(token)
 
     @app.get("/chat/stream")
     async def chat_stream(request: Request):
-        req_id = new_req_id()
-        stream_start = time.monotonic()
+        # Continues the trace_id chat_start minted (passed back as a query
+        # param, same pattern as question/model_id/started_at_ms — see
+        # window.startAnswerStream in app/templates/index.html). Falls back
+        # to minting a fresh one so hitting this endpoint directly doesn't
+        # break, but that's a real gap worth a warning.
+        raw_trace_id = request.query_params.get("trace_id", "").strip()
+        missing_trace_id = not raw_trace_id
+        trace_id = raw_trace_id or new_trace_id()
+        trace_token = trace_id_var.set(trace_id)
+        reset_deferred = False
 
-        question = request.query_params.get("question", "").strip()
-        model_id = request.query_params.get("model_id", "").strip()
-        started_at_raw = request.query_params.get("started_at_ms", "").strip()
-
-        if not question:
-            return PlainTextResponse("question is required", status_code=400)
-
-        cfg = MODEL_CONFIGS.get(model_id)
-        if cfg is None:
-            return PlainTextResponse("invalid model_id", status_code=400)
-
-        client = provider_clients.get(cfg.provider) if provider_clients else None
-        if client is None:
-            return PlainTextResponse("provider client not configured", status_code=500)
-
-        api_key = (api_keys.get(cfg.env_key, "") if api_keys else "").strip()
-        if not api_key and cfg.provider != "ollama":
-            return PlainTextResponse(f"missing {cfg.env_key} for selected provider", status_code=400)
-
-        logger.info(
-            "[http][%s] stream start question_chars=%d provider=%s model=%s",
-            req_id, len(question), cfg.provider, cfg.model, extra={"stage": "http"},
-        )
-
-        def sse(event: str, data: str) -> str:
-            return f"event: {event}\ndata: {data.replace(chr(10), chr(92) + 'n')}\n\n"
-
-        async def event_stream() -> AsyncIterator[str]:
-            try:
-                prompt, results = await rag_service.build_prompt(question)
-            except Exception as err:
-                app_err = classify_error(err)
-                logger.info(
-                    "[http][%s] retrieval failed code=%s retryable=%s err=%s",
-                    req_id, app_err.code, app_err.retryable, err, extra={"stage": "retrieve"},
+        # Unlike chat_start, this handler can return a StreamingResponse
+        # whose body (event_stream() below) is driven by Starlette *after*
+        # this coroutine returns — under anyio that runs in a separate task
+        # with its own copy of the current context, so `trace_id_var.reset`
+        # must NOT happen in a plain try/finally here (that fires the
+        # instant this function returns, before the copy is even taken, and
+        # calling .reset() from that other task raises "Token was created
+        # in a different Context" anyway). Early-return validation paths
+        # below reset immediately since no streaming ever starts for them;
+        # the success path defers the reset to a StreamingResponse
+        # background task, which runs in *this* same context, after the
+        # stream has fully sent.
+        try:
+            if missing_trace_id:
+                logger.warning(
+                    "chat stream missing trace_id; generated %s", trace_id,
+                    extra={"stage": "http"},
                 )
-                yield sse("streamerror", encode_stream_error_payload(app_err))
-                return
 
-            if not results:
-                yield sse("sources", base64.b64encode(b"[]").decode("ascii"))
-                if prompt:
-                    yield sse("token", prompt)
-                yield sse("done", "complete")
-                return
+            stream_start = time.monotonic()
 
-            src_rows = []
-            for r in results:
-                text = r.text
-                if len(text) > _MAX_SOURCE_RUNES:
-                    text = text[:_MAX_SOURCE_RUNES] + "…"
-                src_rows.append({"page": r.page, "score": r.score, "text": text})
-            src_json = json.dumps(src_rows).encode("utf-8")
-            yield sse("sources", base64.b64encode(src_json).decode("ascii"))
+            question = request.query_params.get("question", "").strip()
+            model_id = request.query_params.get("model_id", "").strip()
+            started_at_raw = request.query_params.get("started_at_ms", "").strip()
 
-            try:
-                async for token in client.stream_answer(api_key, cfg.model, prompt):
-                    yield sse("token", token)
-            except Exception as err:
-                app_err = classify_error(err)
-                logger.info(
-                    "[http][%s] stream failed code=%s retryable=%s err=%s",
-                    req_id, app_err.code, app_err.retryable, err, extra={"stage": "generate"},
-                )
-                yield sse("streamerror", encode_stream_error_payload(app_err))
-                return
+            if not question:
+                return PlainTextResponse("question is required", status_code=400)
 
-            stream_duration = time.monotonic() - stream_start
-            total_from_query = stream_duration
-            if started_at_raw:
-                try:
-                    started_at_ms = int(started_at_raw)
-                    if started_at_ms > 0:
-                        total_from_query = time.time() - (started_at_ms / 1000)
-                except ValueError:
-                    pass
+            cfg = MODEL_CONFIGS.get(model_id)
+            if cfg is None:
+                return PlainTextResponse("invalid model_id", status_code=400)
+
+            client = provider_clients.get(cfg.provider) if provider_clients else None
+            if client is None:
+                return PlainTextResponse("provider client not configured", status_code=500)
+
+            api_key = (api_keys.get(cfg.env_key, "") if api_keys else "").strip()
+            if not api_key and cfg.provider != "ollama":
+                return PlainTextResponse(f"missing {cfg.env_key} for selected provider", status_code=400)
+
             logger.info(
-                "[http][%s] stream complete duration=%.3fs total_from_query=%.3fs",
-                req_id, stream_duration, total_from_query, extra={"stage": "generate"},
+                "stream start question_chars=%d provider=%s model=%s",
+                len(question), cfg.provider, cfg.model, extra={"stage": "http"},
             )
-            yield sse("done", "complete")
 
-        return StreamingResponse(
-            event_stream(),
-            headers={
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            },
-        )
+            def sse(event: str, data: str) -> str:
+                return f"event: {event}\ndata: {data.replace(chr(10), chr(92) + 'n')}\n\n"
+
+            async def event_stream() -> AsyncIterator[str]:
+                try:
+                    prompt, results = await rag_service.build_prompt(question)
+                except Exception as err:
+                    app_err = classify_error(err)
+                    logger.info(
+                        "retrieval failed code=%s retryable=%s err=%s",
+                        app_err.code, app_err.retryable, err, extra={"stage": "retrieve"},
+                    )
+                    yield sse("streamerror", encode_stream_error_payload(app_err))
+                    return
+
+                if not results:
+                    yield sse("sources", base64.b64encode(b"[]").decode("ascii"))
+                    if prompt:
+                        yield sse("token", prompt)
+                    yield sse("done", "complete")
+                    return
+
+                src_rows = []
+                for r in results:
+                    text = r.text
+                    if len(text) > _MAX_SOURCE_RUNES:
+                        text = text[:_MAX_SOURCE_RUNES] + "…"
+                    src_rows.append({"page": r.page, "score": r.score, "text": text})
+                src_json = json.dumps(src_rows).encode("utf-8")
+                yield sse("sources", base64.b64encode(src_json).decode("ascii"))
+
+                try:
+                    async for token in client.stream_answer(api_key, cfg.model, prompt):
+                        yield sse("token", token)
+                except Exception as err:
+                    app_err = classify_error(err)
+                    logger.info(
+                        "stream failed code=%s retryable=%s err=%s",
+                        app_err.code, app_err.retryable, err, extra={"stage": "generate"},
+                    )
+                    yield sse("streamerror", encode_stream_error_payload(app_err))
+                    return
+
+                stream_duration = time.monotonic() - stream_start
+                total_from_query = stream_duration
+                if started_at_raw:
+                    try:
+                        started_at_ms = int(started_at_raw)
+                        if started_at_ms > 0:
+                            total_from_query = time.time() - (started_at_ms / 1000)
+                    except ValueError:
+                        pass
+                logger.info(
+                    "stream complete duration=%.3fs total_from_query=%.3fs",
+                    stream_duration, total_from_query, extra={"stage": "generate"},
+                )
+                yield sse("done", "complete")
+
+            async def reset_trace_id() -> None:
+                trace_id_var.reset(trace_token)
+
+            reset_deferred = True
+            return StreamingResponse(
+                event_stream(),
+                headers={
+                    "Content-Type": "text/event-stream",
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+                background=BackgroundTask(reset_trace_id),
+            )
+        finally:
+            if not reset_deferred:
+                trace_id_var.reset(trace_token)
 
     return app
 
