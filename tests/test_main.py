@@ -21,6 +21,7 @@ string that no longer applies.
 
 import base64
 import json
+import logging
 
 import asyncpg
 from fastapi import FastAPI
@@ -190,3 +191,31 @@ async def test_handle_chat_stream_dependency_unavailable_emits_streamerror():
         "Search is temporarily unavailable because the retrieval service is offline. "
         "Please try again shortly."
     )
+
+
+async def test_handle_ingest_logs_carry_ingest_stage(caplog):
+    # Proves app/main.py's ingest handler wires `extra={"stage": "ingest"}`
+    # through to the actual LogRecord — the JSON shape itself is covered by
+    # tests/test_logging_utils.py's isolated JsonFormatter unit tests.
+    svc = await _unreachable_rag_service()
+    with caplog.at_level(logging.INFO):
+        async with _async_client(_app_for(svc)) as client:
+            resp = await client.post("/ingest")
+
+    assert resp.status_code == 200
+    ingest_records = [r for r in caplog.records if getattr(r, "stage", None) == "ingest"]
+    assert ingest_records, "expected at least one log record with stage=ingest"
+
+
+async def test_handle_chat_start_logs_carry_http_stage(caplog):
+    svc = await _unreachable_rag_service()
+    with caplog.at_level(logging.INFO):
+        async with _async_client(_app_for(svc)) as client:
+            resp = await client.post(
+                "/chat/start",
+                data={"question": "hi", "model_id": "groq_llama31_8b"},
+            )
+
+    assert resp.status_code == 200
+    http_records = [r for r in caplog.records if getattr(r, "stage", None) == "http"]
+    assert http_records, "expected at least one log record with stage=http"

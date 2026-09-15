@@ -32,6 +32,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Str
 from app.config import Settings, load_config
 from app.embed import OllamaClient
 from app.llm import OpenAICompatibleClient
+from app.logging_utils import configure_logging
 from app.rag import RagService
 from app.store import PostgresStore
 
@@ -203,7 +204,7 @@ def create_app(
         try:
             form = await request.form()
         except Exception as err:
-            logger.info("[http][%s] upload parse form: %s", req_id, err)
+            logger.info("[http][%s] upload parse form: %s", req_id, err, extra={"stage": "http"})
             return JSONResponse({"error": "invalid or too large upload"}, status_code=400)
 
         upload = form.get("file")
@@ -221,7 +222,7 @@ def create_app(
         try:
             docs_path.mkdir(parents=True, exist_ok=True)
         except OSError as err:
-            logger.info("[http][%s] upload mkdir: %s", req_id, err)
+            logger.info("[http][%s] upload mkdir: %s", req_id, err, extra={"stage": "http"})
             return JSONResponse({"error": "could not prepare docs folder"}, status_code=500)
 
         abs_dir = docs_path.resolve()
@@ -245,10 +246,10 @@ def create_app(
             return JSONResponse({"error": "invalid or too large upload"}, status_code=400)
         except OSError as err:
             abs_dest.unlink(missing_ok=True)
-            logger.info("[http][%s] upload write: %s", req_id, err)
+            logger.info("[http][%s] upload write: %s", req_id, err, extra={"stage": "http"})
             return JSONResponse({"error": "could not write file"}, status_code=500)
 
-        logger.info("[http][%s] upload ok name=%s bytes=%d", req_id, base, written)
+        logger.info("[http][%s] upload ok name=%s bytes=%d", req_id, base, written, extra={"stage": "http"})
         return JSONResponse({"name": base})
 
     # ---- ingest -------------------------------------------------------
@@ -256,15 +257,15 @@ def create_app(
     @app.post("/ingest")
     async def ingest() -> HTMLResponse:
         req_id = new_req_id()
-        logger.info("[http][%s] ingest start", req_id)
+        logger.info("[http][%s] ingest start", req_id, extra={"stage": "ingest"})
 
         try:
             count = await rag_service.ingest()
         except Exception as err:
-            logger.info("[http][%s] ingest failed: %s", req_id, err)
+            logger.info("[http][%s] ingest failed: %s", req_id, err, extra={"stage": "ingest"})
             return HTMLResponse(f'<p class="error">Ingestion failed: {html.escape(str(err))}</p>')
 
-        logger.info("[http][%s] ingest success chunks=%d", req_id, count)
+        logger.info("[http][%s] ingest success chunks=%d", req_id, count, extra={"stage": "ingest"})
         return HTMLResponse(f'<p class="ok">Ingestion complete. Indexed {count} chunks.</p>')
 
     # ---- chat -----------------------------------------------------------
@@ -283,7 +284,10 @@ def create_app(
         if model_id not in MODEL_CONFIGS:
             return PlainTextResponse("invalid model selection", status_code=400)
 
-        logger.info("[http][%s] chat start question_chars=%d model_id=%s", req_id, len(question), model_id)
+        logger.info(
+            "[http][%s] chat start question_chars=%d model_id=%s",
+            req_id, len(question), model_id, extra={"stage": "http"},
+        )
 
         escaped_question = html.escape(question)
         escaped_query = urllib.parse.quote_plus(question)
@@ -323,7 +327,7 @@ def create_app(
 
         logger.info(
             "[http][%s] stream start question_chars=%d provider=%s model=%s",
-            req_id, len(question), cfg.provider, cfg.model,
+            req_id, len(question), cfg.provider, cfg.model, extra={"stage": "http"},
         )
 
         def sse(event: str, data: str) -> str:
@@ -336,7 +340,7 @@ def create_app(
                 app_err = classify_error(err)
                 logger.info(
                     "[http][%s] retrieval failed code=%s retryable=%s err=%s",
-                    req_id, app_err.code, app_err.retryable, err,
+                    req_id, app_err.code, app_err.retryable, err, extra={"stage": "retrieve"},
                 )
                 yield sse("streamerror", encode_stream_error_payload(app_err))
                 return
@@ -364,7 +368,7 @@ def create_app(
                 app_err = classify_error(err)
                 logger.info(
                     "[http][%s] stream failed code=%s retryable=%s err=%s",
-                    req_id, app_err.code, app_err.retryable, err,
+                    req_id, app_err.code, app_err.retryable, err, extra={"stage": "generate"},
                 )
                 yield sse("streamerror", encode_stream_error_payload(app_err))
                 return
@@ -380,7 +384,7 @@ def create_app(
                     pass
             logger.info(
                 "[http][%s] stream complete duration=%.3fs total_from_query=%.3fs",
-                req_id, stream_duration, total_from_query,
+                req_id, stream_duration, total_from_query, extra={"stage": "generate"},
             )
             yield sse("done", "complete")
 
@@ -412,6 +416,8 @@ async def bootstrap() -> FastAPI:
     """
     import asyncpg
 
+    configure_logging(service="rag-server")
+
     settings = load_config()
     logger.info(
         "[boot] config loaded port=%s ollama_host=%s collection=%s top_k=%d handbook=%s "
@@ -419,6 +425,7 @@ async def bootstrap() -> FastAPI:
         settings.port, settings.ollama_host, settings.collection_name, settings.top_k,
         settings.handbook_path, bool(settings.openrouter_api_key), bool(settings.groq_api_key),
         bool(os.environ.get("LLAMA_CLOUD_API_KEY")),
+        extra={"stage": "boot"},
     )
 
     embed_client = OllamaClient(settings.ollama_host)
@@ -450,7 +457,10 @@ async def bootstrap() -> FastAPI:
     }
 
     rag_service.set_query_rewriter(provider_clients["ollama"], settings.ollama_api_key, "gemma4:26b")
-    logger.info("[boot] query rewrite enabled provider=ollama model=gemma4:26b base=%s", ollama_openai_base)
+    logger.info(
+        "[boot] query rewrite enabled provider=ollama model=gemma4:26b base=%s",
+        ollama_openai_base, extra={"stage": "boot"},
+    )
 
     return create_app(
         rag_service=rag_service,

@@ -51,7 +51,10 @@ def _load_cache(key: str) -> list[PageText] | None:
         data = json.loads(fp.read_text(encoding="utf-8"))
         return [PageText.model_validate(p) for p in data["pages"]]
     except Exception as e:
-        logger.warning("cache read failed key=%s err=%s — re-extracting", key, e)
+        logger.warning(
+            "cache read failed key=%s err=%s — re-extracting", key, e,
+            extra={"stage": "ingest"},
+        )
         return None
 
 
@@ -86,7 +89,7 @@ async def extract_by_page(path: str) -> list[PageText]:
 
     Raises PdfExtractError if the chosen path yields no non-empty pages.
     """
-    logger.info("start path=%s", path)
+    logger.info("start path=%s", path, extra={"stage": "ingest"})
 
     key = os.environ.get("LLAMA_CLOUD_API_KEY", "").strip()
     source = "llamaparse" if key else "pypdf"
@@ -98,15 +101,19 @@ async def extract_by_page(path: str) -> list[PageText]:
         logger.info(
             "cache hit source=%s pages=%d key=%s — no extraction call made",
             source, len(cached), cache_key,
+            extra={"stage": "ingest"},
         )
         return cached
-    logger.info("cache miss source=%s key=%s — extracting for real", source, cache_key)
+    logger.info(
+        "cache miss source=%s key=%s — extracting for real", source, cache_key,
+        extra={"stage": "ingest"},
+    )
 
     if key:
         try:
             pages = await extract_pages(key, path, tier)
         except Exception as e:
-            logger.error("parser=llamaparse failed err=%s", e)
+            logger.error("parser=llamaparse failed err=%s", e, extra={"stage": "ingest"})
             raise
 
         out: list[PageText] = []
@@ -120,17 +127,17 @@ async def extract_by_page(path: str) -> list[PageText]:
         if not out:
             raise PdfExtractError("llamaparse: no non-empty pages")
 
-        logger.info("parser=llamaparse pages=%d tier=%s", len(out), tier)
+        logger.info("parser=llamaparse pages=%d tier=%s", len(out), tier, extra={"stage": "ingest"})
         _save_cache(cache_key, out, source, tier, path)
         return out
 
     try:
         pages = _extract_with_pypdf(path)
     except Exception as e:
-        logger.error("parser=pypdf failed err=%s", e)
+        logger.error("parser=pypdf failed err=%s", e, extra={"stage": "ingest"})
         raise PdfExtractError(f"extract text with pypdf: {e}") from e
 
-    logger.info("parser=pypdf pages=%d", len(pages))
+    logger.info("parser=pypdf pages=%d", len(pages), extra={"stage": "ingest"})
     _save_cache(cache_key, pages, source, tier, path)
     return pages
 

@@ -210,38 +210,43 @@ class RagService:
             self._collection,
             self._pdf_path,
             self._embed_model,
+            extra={"stage": "ingest"},
         )
 
         await self._store.ensure_schema(self._collection)
-        ingest_logger.info("store collection ready: %s", self._collection)
+        ingest_logger.info("store collection ready: %s", self._collection, extra={"stage": "ingest"})
 
         pages = await extract_by_page(self._pdf_path)
-        ingest_logger.info("extracted pages=%d", len(pages))
+        ingest_logger.info("extracted pages=%d", len(pages), extra={"stage": "ingest"})
 
         inputs = [ChunkInput(page=p.page, text=p.text) for p in pages]
 
         chunks: list[Chunk] = chunk_build(inputs, self._chunk_words)
         ingest_logger.info(
-            "built chunks=%d words_per_chunk=%d", len(chunks), self._chunk_words
+            "built chunks=%d words_per_chunk=%d", len(chunks), self._chunk_words,
+            extra={"stage": "ingest"},
         )
         for c in chunks:
             vec = await self._embed_client.embed(self._embed_model, c.text)
             await self._store.upsert(self._collection, c.id, vec, c.text, c.page)
             if c.id > 0 and c.id % 25 == 0:
                 ingest_logger.info(
-                    "progress upserted_chunks=%d/%d", c.id + 1, len(chunks)
+                    "progress upserted_chunks=%d/%d", c.id + 1, len(chunks),
+                    extra={"stage": "ingest"},
                 )
 
         duration = time.monotonic() - start
         ingest_logger.info(
-            "complete chunks=%d duration=%.3fs", len(chunks), duration
+            "complete chunks=%d duration=%.3fs", len(chunks), duration,
+            extra={"stage": "ingest"},
         )
         return len(chunks)
 
     async def build_prompt(self, question: str) -> tuple[str, list[SearchResult]]:
         start = time.monotonic()
         retrieve_logger.info(
-            "start question_chars=%d top_k=%d", len(question), self._top_k
+            "start question_chars=%d top_k=%d", len(question), self._top_k,
+            extra={"stage": "retrieve"},
         )
 
         retrieval_query = question
@@ -255,7 +260,8 @@ class RagService:
                 )
             except Exception as err:
                 retrieve_logger.info(
-                    "rewrite failed fallback_original=true error=%s", err
+                    "rewrite failed fallback_original=true error=%s", err,
+                    extra={"stage": "retrieve"},
                 )
             else:
                 if rewrite_result.action == RewriteAction.REWRITE_FOR_RETRIEVAL:
@@ -265,10 +271,12 @@ class RagService:
                         rewrite_result.action,
                         question,
                         retrieval_query,
+                        extra={"stage": "retrieve"},
                     )
                 else:
                     retrieve_logger.info(
-                        "triage action=%s direct_reply=true", rewrite_result.action
+                        "triage action=%s direct_reply=true", rewrite_result.action,
+                        extra={"stage": "retrieve"},
                     )
                     return rewrite_result.assistant_message, []
 
@@ -276,7 +284,8 @@ class RagService:
             self._embed_model, retrieval_query
         )
         retrieve_logger.info(
-            "embedded question vector_dim=%d", len(query_embedding)
+            "embedded question vector_dim=%d", len(query_embedding),
+            extra={"stage": "retrieve"},
         )
 
         results = await self._store.search(
@@ -284,14 +293,15 @@ class RagService:
         )
         if not results:
             raise RagError("no context found; run ingestion first")
-        retrieve_logger.info("retrieved context_chunks=%d", len(results))
+        retrieve_logger.info("retrieved context_chunks=%d", len(results), extra={"stage": "retrieve"})
 
         context = "".join(f"[Page {r.page}]: {r.text}\n\n" for r in results)
 
         user_prompt = _PROMPT_TEMPLATE % (context, question)
 
-        retrieve_logger.info("assembled prompt_chars=%d", len(user_prompt))
+        retrieve_logger.info("assembled prompt_chars=%d", len(user_prompt), extra={"stage": "retrieve"})
         retrieve_logger.info(
-            "retrieval complete duration=%.3fs", time.monotonic() - start
+            "retrieval complete duration=%.3fs", time.monotonic() - start,
+            extra={"stage": "retrieve"},
         )
         return user_prompt, results
