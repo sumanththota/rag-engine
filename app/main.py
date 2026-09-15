@@ -201,73 +201,101 @@ def create_app(
 
     @app.post("/docs/upload")
     async def upload_doc(request: Request) -> JSONResponse:
+        # One trace_id per upload-then-ingest action, threaded through to
+        # /ingest via the JSON response's "trace_id" field (see the
+        # equivalent chat_start -> chat_stream wiring above). No
+        # StreamingResponse involved here, so a plain try/finally is safe.
         req_id = new_req_id()
+        trace_id = new_trace_id()
+        token = trace_id_var.set(trace_id)
         try:
-            form = await request.form()
-        except Exception as err:
-            logger.info("[http][%s] upload parse form: %s", req_id, err, extra={"stage": "http"})
-            return JSONResponse({"error": "invalid or too large upload"}, status_code=400)
+            try:
+                form = await request.form()
+            except Exception as err:
+                logger.info("[http][%s] upload parse form: %s", req_id, err, extra={"stage": "http"})
+                return JSONResponse({"error": "invalid or too large upload"}, status_code=400)
 
-        upload = form.get("file")
-        if upload is None or not hasattr(upload, "filename"):
-            return JSONResponse({"error": "file is required"}, status_code=400)
+            upload = form.get("file")
+            if upload is None or not hasattr(upload, "filename"):
+                return JSONResponse({"error": "file is required"}, status_code=400)
 
-        base = os.path.basename(upload.filename or "")
-        if base in ("", ".", ".."):
-            return JSONResponse({"error": "invalid filename"}, status_code=400)
-        ext = os.path.splitext(base)[1].lower()
-        if ext not in _UPLOAD_ALLOWED_EXT:
-            return JSONResponse({"error": "allowed types: .pdf, .md, .txt, .html"}, status_code=400)
+            base = os.path.basename(upload.filename or "")
+            if base in ("", ".", ".."):
+                return JSONResponse({"error": "invalid filename"}, status_code=400)
+            ext = os.path.splitext(base)[1].lower()
+            if ext not in _UPLOAD_ALLOWED_EXT:
+                return JSONResponse({"error": "allowed types: .pdf, .md, .txt, .html"}, status_code=400)
 
-        docs_path = Path(docs_dir)
-        try:
-            docs_path.mkdir(parents=True, exist_ok=True)
-        except OSError as err:
-            logger.info("[http][%s] upload mkdir: %s", req_id, err, extra={"stage": "http"})
-            return JSONResponse({"error": "could not prepare docs folder"}, status_code=500)
+            docs_path = Path(docs_dir)
+            try:
+                docs_path.mkdir(parents=True, exist_ok=True)
+            except OSError as err:
+                logger.info("[http][%s] upload mkdir: %s", req_id, err, extra={"stage": "http"})
+                return JSONResponse({"error": "could not prepare docs folder"}, status_code=500)
 
-        abs_dir = docs_path.resolve()
-        abs_dest = (docs_path / base).resolve()
-        if abs_dir not in abs_dest.parents:
-            return JSONResponse({"error": "invalid path"}, status_code=400)
+            abs_dir = docs_path.resolve()
+            abs_dest = (docs_path / base).resolve()
+            if abs_dir not in abs_dest.parents:
+                return JSONResponse({"error": "invalid path"}, status_code=400)
 
-        written = 0
-        try:
-            with abs_dest.open("wb") as out:
-                while True:
-                    chunk = await upload.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    written += len(chunk)
-                    if written > _UPLOAD_MAX_BYTES:
-                        raise ValueError("upload too large")
-                    out.write(chunk)
-        except ValueError:
-            abs_dest.unlink(missing_ok=True)
-            return JSONResponse({"error": "invalid or too large upload"}, status_code=400)
-        except OSError as err:
-            abs_dest.unlink(missing_ok=True)
-            logger.info("[http][%s] upload write: %s", req_id, err, extra={"stage": "http"})
-            return JSONResponse({"error": "could not write file"}, status_code=500)
+            written = 0
+            try:
+                with abs_dest.open("wb") as out:
+                    while True:
+                        chunk = await upload.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        if written > _UPLOAD_MAX_BYTES:
+                            raise ValueError("upload too large")
+                        out.write(chunk)
+            except ValueError:
+                abs_dest.unlink(missing_ok=True)
+                return JSONResponse({"error": "invalid or too large upload"}, status_code=400)
+            except OSError as err:
+                abs_dest.unlink(missing_ok=True)
+                logger.info("[http][%s] upload write: %s", req_id, err, extra={"stage": "http"})
+                return JSONResponse({"error": "could not write file"}, status_code=500)
 
-        logger.info("[http][%s] upload ok name=%s bytes=%d", req_id, base, written, extra={"stage": "http"})
-        return JSONResponse({"name": base})
+            logger.info("[http][%s] upload ok name=%s bytes=%d", req_id, base, written, extra={"stage": "http"})
+            return JSONResponse({"name": base, "trace_id": trace_id})
+        finally:
+            trace_id_var.reset(token)
 
     # ---- ingest -------------------------------------------------------
 
     @app.post("/ingest")
-    async def ingest() -> HTMLResponse:
-        req_id = new_req_id()
-        logger.info("[http][%s] ingest start", req_id, extra={"stage": "ingest"})
-
+    async def ingest(request: Request) -> HTMLResponse:
+        # Continues the trace_id upload_doc minted (passed back as a query
+        # param, same pattern as chat_stream's trace_id). Falls back to
+        # minting a fresh one so hitting this endpoint directly doesn't
+        # break, but that's a real gap worth a warning. Plain try/finally is
+        # safe here too — ingest() returns a plain HTMLResponse, no
+        # separately-spawned task involved (unlike chat_stream).
+        raw_trace_id = request.query_params.get("trace_id", "").strip()
+        missing_trace_id = not raw_trace_id
+        trace_id = raw_trace_id or new_trace_id()
+        token = trace_id_var.set(trace_id)
         try:
-            count = await rag_service.ingest()
-        except Exception as err:
-            logger.info("[http][%s] ingest failed: %s", req_id, err, extra={"stage": "ingest"})
-            return HTMLResponse(f'<p class="error">Ingestion failed: {html.escape(str(err))}</p>')
+            if missing_trace_id:
+                logger.warning(
+                    "ingest missing trace_id; generated %s", trace_id,
+                    extra={"stage": "ingest"},
+                )
 
-        logger.info("[http][%s] ingest success chunks=%d", req_id, count, extra={"stage": "ingest"})
-        return HTMLResponse(f'<p class="ok">Ingestion complete. Indexed {count} chunks.</p>')
+            req_id = new_req_id()
+            logger.info("[http][%s] ingest start", req_id, extra={"stage": "ingest"})
+
+            try:
+                count = await rag_service.ingest()
+            except Exception as err:
+                logger.info("[http][%s] ingest failed: %s", req_id, err, extra={"stage": "ingest"})
+                return HTMLResponse(f'<p class="error">Ingestion failed: {html.escape(str(err))}</p>')
+
+            logger.info("[http][%s] ingest success chunks=%d", req_id, count, extra={"stage": "ingest"})
+            return HTMLResponse(f'<p class="ok">Ingestion complete. Indexed {count} chunks.</p>')
+        finally:
+            trace_id_var.reset(token)
 
     # ---- chat -----------------------------------------------------------
 

@@ -55,13 +55,17 @@ async def _unreachable_rag_service() -> RagService:
     )
 
 
-def _app_for(rag_service: RagService, provider_clients=None, api_keys=None) -> FastAPI:
+def _app_for(rag_service: RagService, provider_clients=None, api_keys=None, docs_dir=None) -> FastAPI:
+    kwargs = {}
+    if docs_dir is not None:
+        kwargs["docs_dir"] = docs_dir
     return create_app(
         rag_service=rag_service,
         provider_clients=provider_clients or {},
         api_keys=api_keys or {},
         embed_client=OllamaClient("http://127.0.0.1:1"),
         store=PostgresStore(pool=None),
+        **kwargs,
     )
 
 
@@ -315,4 +319,77 @@ async def test_trace_id_does_not_leak_across_unrelated_requests():
     # at module level, outside of any request handling, nothing should
     # still be set. If chat_start() forgot to reset, this would show
     # trace_id_2 here instead of None.
+    assert trace_id_var.get() is None
+
+
+# ---- Ticket 4: trace_id correlation across /docs/upload -> /ingest ----
+
+
+async def test_trace_id_correlates_upload_and_ingest(tmp_path, caplog):
+    install_trace_id_filter()
+    svc = await _unreachable_rag_service()
+
+    with caplog.at_level(logging.INFO):
+        async with _async_client(_app_for(svc, docs_dir=str(tmp_path))) as client:
+            upload_resp = await client.post(
+                "/docs/upload",
+                files={"file": ("note.txt", b"hello world", "text/plain")},
+            )
+            assert upload_resp.status_code == 200
+            upload_json = upload_resp.json()
+            assert upload_json["name"] == "note.txt"
+            trace_id = upload_json["trace_id"]
+            assert trace_id
+
+            ingest_resp = await client.post("/ingest", params={"trace_id": trace_id})
+            assert ingest_resp.status_code == 200
+
+    turn_records = [
+        r for r in caplog.records
+        if getattr(r, "stage", None) in ("http", "ingest")
+    ]
+    assert turn_records, "expected log records from the upload+ingest action"
+
+    trace_ids_seen = {getattr(r, "trace_id", None) for r in turn_records}
+    assert trace_ids_seen == {trace_id}, (
+        f"expected every upload/ingest log record to carry trace_id={trace_id!r}, "
+        f"saw {trace_ids_seen!r}"
+    )
+
+    assert any(
+        getattr(r, "stage", None) == "http" and "upload ok" in r.getMessage()
+        for r in turn_records
+    ), "expected a log line from upload_doc"
+    assert any(
+        getattr(r, "stage", None) == "ingest" and "ingest start" in r.getMessage()
+        for r in turn_records
+    ), "expected a log line from ingest"
+
+    # Uploaded file must land only in the isolated tmp docs_dir, never the
+    # repo's real docs/ folder.
+    assert (tmp_path / "note.txt").is_file()
+
+
+async def test_handle_ingest_missing_trace_id_generates_fresh_one(caplog):
+    install_trace_id_filter()
+    svc = await _unreachable_rag_service()
+
+    with caplog.at_level(logging.INFO):
+        async with _async_client(_app_for(svc)) as client:
+            resp = await client.post("/ingest")
+
+    assert resp.status_code == 200
+
+    warning_records = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and getattr(r, "stage", None) == "ingest"
+    ]
+    assert warning_records, "expected a warning logged for the missing trace_id"
+
+    ingest_records = [r for r in caplog.records if getattr(r, "stage", None) == "ingest"]
+    trace_ids_seen = {getattr(r, "trace_id", None) for r in ingest_records}
+    assert len(trace_ids_seen) == 1
+    generated_trace_id = next(iter(trace_ids_seen))
+    assert generated_trace_id, "expected a freshly generated trace_id, not empty/None"
+
     assert trace_id_var.get() is None
