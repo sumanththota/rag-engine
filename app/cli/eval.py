@@ -21,10 +21,10 @@ import asyncpg
 from app.config import ConfigError, Settings, load_config
 from app.embed import OllamaClient
 from app.llm import LLMError, OpenAICompatibleClient
+from app.logging_utils import configure_logging
 from app.rag import RagService
 from app.store import PostgresStore, SearchResult
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 logger = logging.getLogger("rag.eval.cli")
 
 
@@ -86,7 +86,9 @@ def _setup_llm(
 
     md = _MODELS.get(model_id)
     if md is None:
-        logger.warning("unknown model_id=%s — skipping LLM", model_id)
+        logger.warning(
+            "unknown model_id=%s — skipping LLM", model_id, extra={"stage": "eval"}
+        )
         return None, "", ""
 
     api_keys = {
@@ -96,7 +98,7 @@ def _setup_llm(
     }
     api_key = api_keys[md.env_key].strip()
     if not api_key and md.provider != "ollama":
-        logger.warning("missing %s — skipping LLM", md.env_key)
+        logger.warning("missing %s — skipping LLM", md.env_key, extra={"stage": "eval"})
         return None, "", ""
 
     if md.provider == "openrouter":
@@ -109,7 +111,7 @@ def _setup_llm(
     elif md.provider == "ollama":
         client = OpenAICompatibleClient(cfg.ollama_host.rstrip("/") + "/v1")
     else:
-        logger.warning("unknown provider=%s", md.provider)
+        logger.warning("unknown provider=%s", md.provider, extra={"stage": "eval"})
         return None, "", ""
 
     return client, md.model, api_key
@@ -134,17 +136,23 @@ async def _get_answer(
 
 
 async def _run(argv: list[str]) -> int:
+    configure_logging(service="rag-eval-cli")
+
     args = _parse_args(argv)
 
     try:
         cfg = load_config()
     except ConfigError as err:
-        logger.error("load config: %s", err)
+        logger.error("load config: %s", err, extra={"stage": "boot"})
         return 1
 
     collection = f"handbook_eval_w{args.chunk_words}_k{args.top_k}"
     logger.info(
-        "chunk_words=%d top_k=%d collection=%s", args.chunk_words, args.top_k, collection
+        "chunk_words=%d top_k=%d collection=%s",
+        args.chunk_words,
+        args.top_k,
+        collection,
+        extra={"stage": "boot"},
     )
 
     pool = await asyncpg.create_pool(cfg.database_url)
@@ -158,31 +166,42 @@ async def _run(argv: list[str]) -> int:
             chunk_words=args.chunk_words,
         )
 
-        logger.info("ingesting PDF into collection=%s ...", collection)
+        logger.info(
+            "ingesting PDF into collection=%s ...", collection, extra={"stage": "ingest"}
+        )
         try:
             count = await svc.ingest()
         except Exception as err:
-            logger.error("ingest: %s", err)
+            logger.error("ingest: %s", err, extra={"stage": "ingest"})
             return 1
-        logger.info("ingested chunks=%d", count)
+        logger.info("ingested chunks=%d", count, extra={"stage": "ingest"})
 
         try:
             questions = _load_questions(args.questions)
         except OSError as err:
-            logger.error("load questions from %s: %s", args.questions, err)
+            logger.error(
+                "load questions from %s: %s",
+                args.questions,
+                err,
+                extra={"stage": "eval"},
+            )
             return 1
-        logger.info("loaded questions=%d", len(questions))
+        logger.info("loaded questions=%d", len(questions), extra={"stage": "eval"})
 
         llm_client, llm_model, llm_api_key = _setup_llm(args.model, cfg)
 
         with open(args.output, "a", encoding="utf-8") as out:
             for i, question in enumerate(questions, start=1):
-                logger.info("[%d/%d] %s", i, len(questions), question)
+                logger.info(
+                    "[%d/%d] %s", i, len(questions), question, extra={"stage": "eval"}
+                )
 
                 try:
                     results = await svc.retrieve(question)
                 except Exception as err:
-                    logger.error("retrieve failed: %s — skipping", err)
+                    logger.error(
+                        "retrieve failed: %s — skipping", err, extra={"stage": "eval"}
+                    )
                     continue
 
                 chunks = [
@@ -205,18 +224,24 @@ async def _run(argv: list[str]) -> int:
                             llm_client, llm_api_key, llm_model, question, results
                         )
                     except LLMError as err:
-                        logger.error("LLM failed: %s", err)
+                        logger.error("LLM failed: %s", err, extra={"stage": "eval"})
                     else:
                         if answer:
                             record["answer"] = answer
 
                 out.write(json.dumps(record, ensure_ascii=False) + "\n")
                 out.flush()
-                logger.info("[%d/%d] done avg_score=%.4f", i, len(questions), avg_score)
+                logger.info(
+                    "[%d/%d] done avg_score=%.4f",
+                    i,
+                    len(questions),
+                    avg_score,
+                    extra={"stage": "eval"},
+                )
     finally:
         await pool.close()
 
-    logger.info("complete — results in %s", args.output)
+    logger.info("complete — results in %s", args.output, extra={"stage": "eval"})
     return 0
 
 

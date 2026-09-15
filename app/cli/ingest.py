@@ -13,18 +13,20 @@ import asyncpg
 
 from app.config import ConfigError, load_config
 from app.embed import OllamaClient
+from app.logging_utils import configure_logging
 from app.rag import RagService
 from app.store import PostgresStore
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 logger = logging.getLogger("rag.ingest.cli")
 
 
 async def _run() -> int:
+    configure_logging(service="rag-ingest-cli")
+
     try:
         cfg = load_config()
     except ConfigError as err:
-        logger.error("load config: %s", err)
+        logger.error("load config: %s", err, extra={"stage": "boot"})
         return 1
 
     logger.info(
@@ -33,6 +35,7 @@ async def _run() -> int:
         cfg.collection_name,
         cfg.handbook_path,
         cfg.ollama_host,
+        extra={"stage": "ingest"},
     )
 
     pool = await asyncpg.create_pool(cfg.database_url)
@@ -48,12 +51,12 @@ async def _run() -> int:
         try:
             count = await svc.ingest()
         except Exception as err:
-            logger.error("[ingest] failed: %s", err)
+            logger.error("[ingest] failed: %s", err, extra={"stage": "ingest"})
             return 1
     finally:
         await pool.close()
 
-    logger.info("[ingest] complete indexed_chunks=%d", count)
+    logger.info("[ingest] complete indexed_chunks=%d", count, extra={"stage": "ingest"})
     return 0
 
 
