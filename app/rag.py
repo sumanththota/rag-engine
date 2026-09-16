@@ -56,6 +56,33 @@ class RewriteResult(BaseModel):
     assistant_message: str = ""
 
 
+class RewriteOutcomeStatus(str, Enum):
+    NOT_CONFIGURED = "not_configured"
+    RAN = "ran"
+    FAILED_FALLBACK = "failed_fallback"
+
+
+class RewriteOutcome(BaseModel):
+    """What build_prompt's rewrite step actually did on this call, so a Trace's
+    rewrite Step can distinguish "never configured" from "configured but the
+    LLM call failed and fell back to the raw question" — see
+    docs/evals/phase1-spec.md story 6."""
+
+    status: RewriteOutcomeStatus
+    original_question: str = ""
+    rewritten_query: str = ""
+
+
+class BuildPromptResult(BaseModel):
+    """Widened return value for RagService.build_prompt: the assembled prompt
+    (or, for a graceful_reply/ask_better_question direct reply, that reply
+    text with empty results) plus the rewrite outcome."""
+
+    prompt: str
+    results: list[SearchResult]
+    rewrite_outcome: RewriteOutcome
+
+
 @dataclass
 class QueryRewriter:
     client: OpenAICompatibleClient
@@ -242,7 +269,7 @@ class RagService:
         )
         return len(chunks)
 
-    async def build_prompt(self, question: str) -> tuple[str, list[SearchResult]]:
+    async def build_prompt(self, question: str) -> BuildPromptResult:
         start = time.monotonic()
         retrieve_logger.info(
             "start question_chars=%d top_k=%d", len(question), self._top_k,
@@ -250,6 +277,7 @@ class RagService:
         )
 
         retrieval_query = question
+        rewrite_outcome = RewriteOutcome(status=RewriteOutcomeStatus.NOT_CONFIGURED)
         if self._rewriter is not None:
             try:
                 rewrite_result = await _rewrite_query_with_llm(
@@ -263,6 +291,10 @@ class RagService:
                     "rewrite failed fallback_original=true error=%s", err,
                     extra={"stage": "retrieve"},
                 )
+                rewrite_outcome = RewriteOutcome(
+                    status=RewriteOutcomeStatus.FAILED_FALLBACK,
+                    original_question=question,
+                )
             else:
                 if rewrite_result.action == RewriteAction.REWRITE_FOR_RETRIEVAL:
                     retrieval_query = rewrite_result.rewritten_query
@@ -273,12 +305,25 @@ class RagService:
                         retrieval_query,
                         extra={"stage": "retrieve"},
                     )
+                    rewrite_outcome = RewriteOutcome(
+                        status=RewriteOutcomeStatus.RAN,
+                        original_question=question,
+                        rewritten_query=retrieval_query,
+                    )
                 else:
                     retrieve_logger.info(
                         "triage action=%s direct_reply=true", rewrite_result.action,
                         extra={"stage": "retrieve"},
                     )
-                    return rewrite_result.assistant_message, []
+                    rewrite_outcome = RewriteOutcome(
+                        status=RewriteOutcomeStatus.RAN,
+                        original_question=question,
+                    )
+                    return BuildPromptResult(
+                        prompt=rewrite_result.assistant_message,
+                        results=[],
+                        rewrite_outcome=rewrite_outcome,
+                    )
 
         query_embedding = await self._embed_client.embed(
             self._embed_model, retrieval_query
@@ -304,4 +349,6 @@ class RagService:
             "retrieval complete duration=%.3fs", time.monotonic() - start,
             extra={"stage": "retrieve"},
         )
-        return user_prompt, results
+        return BuildPromptResult(
+            prompt=user_prompt, results=results, rewrite_outcome=rewrite_outcome
+        )

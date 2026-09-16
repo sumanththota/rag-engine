@@ -20,6 +20,7 @@ from app.rag import (
     RagService,
     RewriteAction,
     RewriteError,
+    RewriteOutcomeStatus,
     RewriteResult,
     _fallback_rewrite_query,
     _is_clearly_off_topic,
@@ -57,7 +58,8 @@ async def test_build_prompt_assembles_context_and_matches_go_template():
     ]
     svc, _, _ = make_service(embed_client=embed_client, store=store)
 
-    prompt, results = await svc.build_prompt("What is the GPA policy?")
+    result = await svc.build_prompt("What is the GPA policy?")
+    prompt, results = result.prompt, result.results
 
     assert results == store.search.return_value
     embed_client.embed.assert_awaited_once_with(
@@ -72,6 +74,7 @@ async def test_build_prompt_assembles_context_and_matches_go_template():
     assert prompt.endswith(
         "Do not cite for greetings, simple clarifications, or conversational replies.]\n\t"
     )
+    assert result.rewrite_outcome.status == RewriteOutcomeStatus.NOT_CONFIGURED
 
 
 async def test_build_prompt_raises_rag_error_on_no_results():
@@ -102,11 +105,14 @@ async def test_build_prompt_uses_rewritten_query_for_embedding():
     )
     svc.set_query_rewriter(llm_client, "key", "model")
 
-    await svc.build_prompt("what's the min gpa i need?")
+    result = await svc.build_prompt("what's the min gpa i need?")
 
     embed_client.embed.assert_awaited_once_with(
         "qllama/bge-small-en-v1.5", "gpa policy standing"
     )
+    assert result.rewrite_outcome.status == RewriteOutcomeStatus.RAN
+    assert result.rewrite_outcome.original_question == "what's the min gpa i need?"
+    assert result.rewrite_outcome.rewritten_query == "gpa policy standing"
 
 
 async def test_build_prompt_graceful_reply_short_circuits_without_embed_or_search():
@@ -121,12 +127,15 @@ async def test_build_prompt_graceful_reply_short_circuits_without_embed_or_searc
     )
     svc.set_query_rewriter(llm_client, "key", "model")
 
-    message, results = await svc.build_prompt("hi")
+    result = await svc.build_prompt("hi")
 
-    assert message == "Hi! Ask me about handbook topics."
-    assert results == []
+    assert result.prompt == "Hi! Ask me about handbook topics."
+    assert result.results == []
     embed_client.embed.assert_not_awaited()
     store.search.assert_not_awaited()
+    assert result.rewrite_outcome.status == RewriteOutcomeStatus.RAN
+    assert result.rewrite_outcome.original_question == "hi"
+    assert result.rewrite_outcome.rewritten_query == ""
 
 
 async def test_build_prompt_falls_back_to_original_question_when_rewrite_fails():
@@ -140,12 +149,15 @@ async def test_build_prompt_falls_back_to_original_question_when_rewrite_fails()
     llm_client.complete.return_value = "not json"
     svc.set_query_rewriter(llm_client, "key", "model")
 
-    prompt, results = await svc.build_prompt("original question")
+    result = await svc.build_prompt("original question")
 
     embed_client.embed.assert_awaited_once_with(
         "qllama/bge-small-en-v1.5", "original question"
     )
-    assert results == store.search.return_value
+    assert result.results == store.search.return_value
+    assert result.rewrite_outcome.status == RewriteOutcomeStatus.FAILED_FALLBACK
+    assert result.rewrite_outcome.original_question == "original question"
+    assert result.rewrite_outcome.rewritten_query == ""
 
 
 # --- set_query_rewriter ---

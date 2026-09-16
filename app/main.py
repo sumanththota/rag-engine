@@ -402,7 +402,7 @@ def create_app(
 
             async def event_stream() -> AsyncIterator[str]:
                 try:
-                    prompt, results = await rag_service.build_prompt(question)
+                    build_result = await rag_service.build_prompt(question)
                 except Exception as err:
                     app_err = classify_error(err)
                     logger.info(
@@ -412,6 +412,7 @@ def create_app(
                     yield sse("streamerror", encode_stream_error_payload(app_err))
                     return
 
+                prompt, results = build_result.prompt, build_result.results
                 if not results:
                     yield sse("sources", base64.b64encode(b"[]").decode("ascii"))
                     if prompt:
