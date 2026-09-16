@@ -1,0 +1,106 @@
+# rag-engine conventions
+
+Reference this before building a new feature, instead of assuming a pattern.
+It documents what this codebase actually does today (verified against
+`app/*.py`), not aspirational style. See [CONTEXT.md](CONTEXT.md) for domain
+vocabulary — this file is implementation conventions, not a glossary.
+
+## 1. Module map / call stack
+
+| Module | Role |
+|---|---|
+| `app/config.py` | `BaseSettings` + `.env` loading. `ConfigError` on invalid config. |
+| `app/chunk.py` | Pure function, no I/O: `build(inputs, words_per_chunk)` → chunk boundaries. |
+| `app/embed.py` | `OllamaClient` — embeddings over HTTP. `EmbedError`. |
+| `app/llm.py` | `OpenAICompatibleClient` — chat completion + streaming (OpenRouter/Groq). `LLMError`. |
+| `app/llamaparse.py` | LlamaCloud PDF-parse client. `LlamaParseError`. |
+| `app/pdfextract.py` | Wraps llamaparse + local pypdf fallback, with a page-text cache. `PdfExtractError`. |
+| `app/store.py` | `PostgresStore` — pgvector upsert/search over asyncpg. `StoreError`. |
+| `app/rag.py` | `RagService` — orchestrator: ingest, query-rewrite, retrieve, prompt build. `RagError`/`RewriteError`. |
+| `app/logging_utils.py` | JSON log formatter + per-request `trace_id` contextvar. |
+| `app/main.py` | FastAPI app: routes, SSE streaming, HTTP-layer error classification. |
+| `app/cli/eval.py` | Offline batch-eval harness → `docs/experiments.jsonl`, viewable at `/dashboard`. |
+| `app/cli/ingest.py` | CLI ingestion entrypoint. |
+
+**Chat turn call stack**: `POST /chat/start` (mints `trace_id`, renders stub) →
+`GET /chat/stream` SSE (`event_stream()`) → `RagService.build_prompt()` →
+optional `_rewrite_query_with_llm()` → `embed_client.embed()` →
+`store.search()` → prompt assembly → `client.stream_answer()` (streamed
+tokens via SSE).
+
+**Ingest call stack**: `RagService.ingest()` → `store.ensure_schema()` →
+`extract_by_page()` (pdfextract) → `chunk.build()` → per-chunk
+`embed_client.embed()` + `store.upsert()`.
+
+## 2. Naming
+
+- **Loggers** are namespaced `rag.<module>` (`rag.ingest`, `rag.retrieve`,
+  `rag.pdfextract`) — matches ops grep patterns from the Go source, don't
+  invent a new namespace.
+- **Data shapes** are Pydantic `BaseModel` (`SearchResult`, `ChatMessage`,
+  `PageText`, `Chunk`) — not `@dataclass`, except for small
+  caller-constructed bundles with no validation need (e.g. `QueryRewriter`
+  in `app/rag.py` uses `@dataclass`).
+- **Private helpers**: leading underscore, module-level, snake_case
+  (`_shrink_text`, `_cache_key`, `_rewrite_query_with_llm`).
+- **Private constants**: leading underscore, `UPPER_SNAKE_CASE`
+  (`_EMBED_MODEL`, `_POLL_INTERVAL_SECONDS`, `_CACHE_DIR`).
+- **Public functions/classes**: no underscore; classes PascalCase, functions
+  snake_case.
+
+## 3. Error handling
+
+- **One typed exception per module**, always a plain `Exception` subclass
+  with a docstring naming what it covers (`EmbedError`, `StoreError`,
+  `LLMError`, `RagError`, `PdfExtractError`, `LlamaParseError`,
+  `ConfigError`). Not Go-style `(result, error)` tuples.
+- Module-internal failures (e.g. Postgres errors in `store.py`) are caught
+  narrowly against a module-level tuple of expected low-level exceptions
+  (see `_DB_ERRORS` in `app/store.py`) and re-raised as that module's typed
+  exception — don't let raw `asyncpg`/`httpx` exceptions escape a module.
+- **HTTP boundary classification happens once**, in `app/main.py`'s
+  `classify_error()`: it switches on exception *type* first (each module's
+  typed exception), falls back to message-substring sniffing only for
+  cross-cutting cases Go itself classified by string (timeout, rate limit).
+  It returns an `AppError(code, user_message, retryable)` — raw exception
+  text is never sent to the client.
+
+## 4. HTTP clients
+
+- Every outbound `httpx.AsyncClient` carries an **explicit timeout** — no
+  client relies on the library default (`app/embed.py`: `timeout=60.0`;
+  `app/llm.py`: separate connect/read/write/pool timeouts;
+  `app/llamaparse.py`: per-call timeouts, plus an outer
+  `asyncio.timeout(...)` around the whole poll loop).
+
+## 5. Logging
+
+- Structured JSON via `app/logging_utils.py`'s `JsonFormatter` — never
+  `print()`. Pass request-specific data through `extra={...}`, not
+  string-interpolated into the message, so it becomes its own JSON field.
+- Every log call in a request path carries `extra={"stage": "<stage>"}`
+  (`ingest` / `http` / `retrieve` / `generate`) — a coarse ops-debugging
+  tag. `trace_id` is stamped automatically via the contextvar filter, never
+  passed manually.
+- Log *lengths/counts*, not raw content (`prompt_chars=%d`,
+  `context_chunks=%d`) — never log full prompt text, chunk text, or
+  generated output. (Phase 1 eval tracing captures full payloads
+  separately, in Postgres, not via this logging path — see
+  [docs/evals/intent.md](docs/evals/intent.md).)
+
+## 6. Business-rule code
+
+- Code ported verbatim from the Go source and called out in comments as a
+  "business rule, not boilerplate" (the prompt template, the query-rewrite
+  prompt, the embed retry/shrink algorithm) must **not** be "cleaned up" or
+  refactored incidentally — treat exact wording/whitespace as load-bearing,
+  not style to normalize.
+
+## See also
+
+- [CONTEXT.md](CONTEXT.md) — domain glossary (Trace, Step, Annotation).
+- [docs/adr/](docs/adr/) — architecture decision records.
+- [docs/evals/intent.md](docs/evals/intent.md) — eval pipeline plan.
+- The sibling Go repo's `docs/MIGRATION.md` — the original Go→Python
+  migration rulebook these conventions were derived from; useful history,
+  not required reading for new features going forward.
