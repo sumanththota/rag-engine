@@ -28,7 +28,7 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
-from starlette.background import BackgroundTask
+from starlette.background import BackgroundTasks
 
 from app.config import Settings, load_config
 from app.embed import OllamaClient
@@ -36,6 +36,7 @@ from app.llm import OpenAICompatibleClient
 from app.logging_utils import configure_logging, new_trace_id, trace_id_var
 from app.rag import RagService
 from app.store import PostgresStore
+from app.traces import GenerateStep, RetrieveStep, RewriteStep, TraceError, TraceStep, TraceStore
 
 logger = logging.getLogger("server")
 
@@ -129,6 +130,7 @@ def create_app(
     api_keys: dict[str, str],
     embed_client: OllamaClient,
     store: PostgresStore,
+    trace_store: TraceStore,
     settings: Settings | None = None,
     experiments_path: str = _DEFAULT_EXPERIMENTS_PATH,
     docs_dir: str = _DEFAULT_DOCS_DIR,
@@ -400,6 +402,15 @@ def create_app(
             def sse(event: str, data: str) -> str:
                 return f"event: {event}\ndata: {data.replace(chr(10), chr(92) + 'n')}\n\n"
 
+            # Populated only along the full rewrite+retrieve+generate happy
+            # path (ticket 2's scope) — mutated inside event_stream() below,
+            # then read by write_trace() once the SSE stream has finished.
+            # turn_complete only flips True after all three steps are in, so
+            # a turn that fails partway (e.g. mid-stream generation error)
+            # never gets a malformed partial Trace written for it.
+            trace_steps: list[TraceStep] = []
+            turn_complete = False
+
             async def event_stream() -> AsyncIterator[str]:
                 try:
                     build_result = await rag_service.build_prompt(question)
@@ -420,6 +431,9 @@ def create_app(
                     yield sse("done", "complete")
                     return
 
+                trace_steps.append(RewriteStep.from_outcome(build_result.rewrite_outcome))
+                trace_steps.append(RetrieveStep(results=results))
+
                 src_rows = []
                 for r in results:
                     text = r.text
@@ -429,8 +443,10 @@ def create_app(
                 src_json = json.dumps(src_rows).encode("utf-8")
                 yield sse("sources", base64.b64encode(src_json).decode("ascii"))
 
+                generated_tokens: list[str] = []
                 try:
                     async for token in client.stream_answer(api_key, cfg.model, prompt):
+                        generated_tokens.append(token)
                         yield sse("token", token)
                 except Exception as err:
                     app_err = classify_error(err)
@@ -440,6 +456,12 @@ def create_app(
                     )
                     yield sse("streamerror", encode_stream_error_payload(app_err))
                     return
+
+                trace_steps.append(
+                    GenerateStep(prompt=prompt, output="".join(generated_tokens))
+                )
+                nonlocal turn_complete
+                turn_complete = True
 
                 stream_duration = time.monotonic() - stream_start
                 total_from_query = stream_duration
@@ -456,10 +478,28 @@ def create_app(
                 )
                 yield sse("done", "complete")
 
+            async def write_trace() -> None:
+                # Fire-and-forget: runs after the SSE stream has fully sent,
+                # so a slow or failed write never adds latency to, or
+                # breaks, the chat response (docs/adr/0001, spec story 12/13).
+                if not turn_complete:
+                    return
+                try:
+                    await trace_store.write(trace_id, question, trace_steps)
+                except TraceError as err:
+                    logger.warning(
+                        "trace write failed err=%s", err, extra={"stage": "trace"},
+                    )
+
             async def reset_trace_id() -> None:
                 trace_id_var.reset(trace_token)
 
             reset_deferred = True
+            background_tasks = BackgroundTasks()
+            # write_trace before reset_trace_id, so its own log lines (on
+            # failure) still carry trace_id via the contextvar filter.
+            background_tasks.add_task(write_trace)
+            background_tasks.add_task(reset_trace_id)
             return StreamingResponse(
                 event_stream(),
                 headers={
@@ -467,7 +507,7 @@ def create_app(
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
                 },
-                background=BackgroundTask(reset_trace_id),
+                background=background_tasks,
             )
         finally:
             if not reset_deferred:
@@ -509,6 +549,14 @@ async def bootstrap() -> FastAPI:
         dsn=settings.database_url, command_timeout=30, timeout=10
     )
     store = PostgresStore(pool)
+    trace_store = TraceStore(pool)
+    try:
+        await trace_store.ensure_schema()
+    except TraceError as err:
+        # Eval capture is a non-critical, complementary layer (ADR-0001) —
+        # a traces-table setup failure must not take down the chat product
+        # itself, matching write_trace()'s own TraceError handling below.
+        logger.warning("[boot] traces schema setup failed: %s", err, extra={"stage": "boot"})
     rag_service = RagService(
         store=store,
         embed_client=embed_client,
@@ -544,6 +592,7 @@ async def bootstrap() -> FastAPI:
         api_keys=api_keys,
         embed_client=embed_client,
         store=store,
+        trace_store=trace_store,
         settings=settings,
     )
 
