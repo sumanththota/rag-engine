@@ -58,7 +58,7 @@ class ModelConfig:
 
 
 MODEL_CONFIGS: dict[str, ModelConfig] = {
-    "openrouter_nemotron": ModelConfig("openrouter", "nvidia/nemotron-3-nano-30b-a3b:free", "OPENROUTER_API_KEY"),
+    "openrouter_nemotron": ModelConfig("openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free", "OPENROUTER_API_KEY"),
     "openrouter_llama4_scout": ModelConfig("openrouter", "meta-llama/llama-4-scout-17b-16e-instruct", "OPENROUTER_API_KEY"),
     "groq_llama31_8b": ModelConfig("groq", "llama-3.1-8b-instant", "GROQ_API_KEY"),
     "ollama_gemma4_26b": ModelConfig("ollama", "gemma4:26b", "OLLAMA_API_KEY"),

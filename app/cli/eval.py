@@ -37,7 +37,7 @@ class _ModelDef:
 
 _MODELS: dict[str, _ModelDef] = {
     "openrouter_nemotron": _ModelDef(
-        "openrouter", "nvidia/nemotron-3-nano-30b-a3b:free", "OPENROUTER_API_KEY"
+        "openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free", "OPENROUTER_API_KEY"
     ),
     "openrouter_llama4_scout": _ModelDef(
         "openrouter", "meta-llama/llama-4-scout-17b-16e-instruct", "OPENROUTER_API_KEY"
