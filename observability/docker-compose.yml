@@ -1,0 +1,36 @@
+name: rag-observability
+
+services:
+  loki:
+    image: grafana/loki:3.0.0
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki-data:/loki
+
+  # promtail runs natively on the host (see observability/README or the
+  # `promtail` launch step), NOT as a container: Docker Desktop's Mac
+  # bind-mount (virtiofs/gRPC-FUSE) doesn't reliably keep a container's
+  # view of a file fresh when it's appended by a process running on the
+  # host, outside the container -- promtail would see the file's size grow
+  # but keep reading stale cached content indefinitely. Running promtail
+  # as a normal host process reads the file directly, no VM boundary.
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    ports:
+      - "3000:3000"
+    environment:
+      # Local-only convenience -- skips the login screen entirely. Never
+      # do this for anything reachable beyond localhost.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    volumes:
+      - ./grafana-datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
+    depends_on:
+      - loki
+
+volumes:
+  loki-data:
