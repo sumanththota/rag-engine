@@ -40,12 +40,14 @@ class RewriteStep(RewriteOutcome):
 class RetrieveStep(BaseModel):
     type: Literal["retrieve"] = "retrieve"
     results: list[SearchResult] = []
+    error: str | None = None
 
 
 class GenerateStep(BaseModel):
     type: Literal["generate"] = "generate"
     prompt: str
     output: str
+    error: str | None = None
 
 
 TraceStep = RewriteStep | RetrieveStep | GenerateStep

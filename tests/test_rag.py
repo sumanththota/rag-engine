@@ -84,8 +84,13 @@ async def test_build_prompt_raises_rag_error_on_no_results():
     store.search.return_value = []
     svc, _, _ = make_service(embed_client=embed_client, store=store)
 
-    with pytest.raises(RagError, match="no context found; run ingestion first"):
+    with pytest.raises(RagError, match="no context found; run ingestion first") as exc_info:
         await svc.build_prompt("anything")
+
+    # ticket 3: the exception must still carry the rewrite_outcome computed
+    # before the failure, so a Trace can record what rewrite did even though
+    # build_prompt never returned a BuildPromptResult.
+    assert exc_info.value.rewrite_outcome.status == RewriteOutcomeStatus.NOT_CONFIGURED
 
 
 # --- build_prompt: rewrite integration ---

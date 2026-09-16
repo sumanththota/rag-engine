@@ -32,7 +32,16 @@ _PROMPT_TEMPLATE = 'Context (retrieved from handbook):\n\t%s\n\t\n\t---\n\t\n\tQ
 class RagError(Exception):
     """Raised for RAG-level failures with no more specific module exception:
     currently just the "no search results" case (equivalent of Go's
-    fmt.Errorf("no context found; run ingestion first"))."""
+    fmt.Errorf("no context found; run ingestion first")).
+
+    Carries the rewrite_outcome already computed before the failure, so a
+    caller building a Trace (app/main.py's event_stream()) can still record
+    what the rewrite step did even though build_prompt raised before
+    returning a BuildPromptResult — see docs/evals/phase1-spec.md ticket 3."""
+
+    def __init__(self, message: str, rewrite_outcome: "RewriteOutcome | None" = None) -> None:
+        super().__init__(message)
+        self.rewrite_outcome = rewrite_outcome
 
 
 class RewriteError(Exception):
@@ -337,7 +346,9 @@ class RagService:
             self._collection, query_embedding, self._top_k
         )
         if not results:
-            raise RagError("no context found; run ingestion first")
+            raise RagError(
+                "no context found; run ingestion first", rewrite_outcome=rewrite_outcome
+            )
         retrieve_logger.info("retrieved context_chunks=%d", len(results), extra={"stage": "retrieve"})
 
         context = "".join(f"[Page {r.page}]: {r.text}\n\n" for r in results)

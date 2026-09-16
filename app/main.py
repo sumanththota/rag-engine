@@ -34,7 +34,7 @@ from app.config import Settings, load_config
 from app.embed import OllamaClient
 from app.llm import OpenAICompatibleClient
 from app.logging_utils import configure_logging, new_trace_id, trace_id_var
-from app.rag import RagService
+from app.rag import RagError, RagService
 from app.store import PostgresStore
 from app.traces import GenerateStep, RetrieveStep, RewriteStep, TraceError, TraceStep, TraceStore
 
@@ -87,7 +87,6 @@ def classify_error(err: Exception) -> AppError:
     from app.embed import EmbedError
     from app.store import StoreError
     from app.llm import LLMError
-    from app.rag import RagError
 
     if isinstance(err, EmbedError):
         return AppError(
@@ -402,18 +401,31 @@ def create_app(
             def sse(event: str, data: str) -> str:
                 return f"event: {event}\ndata: {data.replace(chr(10), chr(92) + 'n')}\n\n"
 
-            # Populated only along the full rewrite+retrieve+generate happy
-            # path (ticket 2's scope) — mutated inside event_stream() below,
-            # then read by write_trace() once the SSE stream has finished.
-            # turn_complete only flips True after all three steps are in, so
-            # a turn that fails partway (e.g. mid-stream generation error)
-            # never gets a malformed partial Trace written for it.
+            # Mutated inside event_stream() below, then read by write_trace()
+            # once the SSE stream has finished. should_write_trace flips True
+            # either on full success or on a failure path that still has
+            # something worth recording (ticket 3: failures are captured,
+            # not dropped — docs/evals/phase1-spec.md) — it no longer means
+            # "the turn fully completed".
             trace_steps: list[TraceStep] = []
-            turn_complete = False
+            should_write_trace = False
 
             async def event_stream() -> AsyncIterator[str]:
+                nonlocal should_write_trace
                 try:
                     build_result = await rag_service.build_prompt(question)
+                except RagError as err:
+                    app_err = classify_error(err)
+                    logger.info(
+                        "retrieval failed code=%s retryable=%s err=%s",
+                        app_err.code, app_err.retryable, err, extra={"stage": "retrieve"},
+                    )
+                    if err.rewrite_outcome is not None:
+                        trace_steps.append(RewriteStep.from_outcome(err.rewrite_outcome))
+                        trace_steps.append(RetrieveStep(results=[], error=str(err)))
+                        should_write_trace = True
+                    yield sse("streamerror", encode_stream_error_payload(app_err))
+                    return
                 except Exception as err:
                     app_err = classify_error(err)
                     logger.info(
@@ -454,14 +466,19 @@ def create_app(
                         "stream failed code=%s retryable=%s err=%s",
                         app_err.code, app_err.retryable, err, extra={"stage": "generate"},
                     )
+                    trace_steps.append(
+                        GenerateStep(
+                            prompt=prompt, output="".join(generated_tokens), error=str(err)
+                        )
+                    )
+                    should_write_trace = True
                     yield sse("streamerror", encode_stream_error_payload(app_err))
                     return
 
                 trace_steps.append(
                     GenerateStep(prompt=prompt, output="".join(generated_tokens))
                 )
-                nonlocal turn_complete
-                turn_complete = True
+                should_write_trace = True
 
                 stream_duration = time.monotonic() - stream_start
                 total_from_query = stream_duration
@@ -482,7 +499,7 @@ def create_app(
                 # Fire-and-forget: runs after the SSE stream has fully sent,
                 # so a slow or failed write never adds latency to, or
                 # breaks, the chat response (docs/adr/0001, spec story 12/13).
-                if not turn_complete:
+                if not should_write_trace:
                     return
                 try:
                     await trace_store.write(trace_id, question, trace_steps)
