@@ -96,8 +96,37 @@ dev server and re-running the exact 5 failing questions plus 2 controls
   correctly still refuse, now with the more specific advisor/DGS redirect
   instead of "the relevant university office."
 
-### 2. Citation/page hallucination — **3/35**
+### 2. Citation/page hallucination — **3/35 — resolved by scope removal, 2026-09-17**
 **Found by:** agent, unchanged on review.
+
+**Resolution:** rather than trying to make the model follow the `[Page N]`
+tag correctly (prevention) or building a detector for when it doesn't
+(detection), the decision was to **stop asking the model to cite pages or
+sections at all**. Scoping check before making that call: verified that all
+3 known cases cite a number that literally appears somewhere in the
+retrieved text (confirmed via direct string search against each trace's
+full prompt) — not a fabrication from nothing, but the same one mechanism
+every time (picking a number from the body text instead of the chunk's own
+`[Page N]:` tag). That gave confidence a single change closes all 3, without
+needing to separate them into different bug classes first.
+
+[app/rag.py:29](../../app/rag.py)'s `_PROMPT_TEMPLATE` dropped the "is a
+citation necessary" thinking step and the "append a citation" instruction,
+replaced with an explicit prohibition: never include page/section numbers
+in the response, even if one appears in the retrieved context. The `[Page N]`
+tags themselves stay in the context sent to the model (still useful for its
+own grounding) and in the trace's `retrieve.results` (still useful for eval
+work like this) — only the model's own *output* citations are gone.
+Verified live: reran `testrun0001`, `seed0012`, and `seed0029`'s exact
+questions after restart — zero citation-like patterns
+(`Page N`/`p.N`/`Section X.X`) in any of the three outputs, and answer
+content quality held (e.g. the "what page discusses academic integrity"
+question now answers "Chapter 8" by name instead of a hallucinated page
+number). `tests/test_rag.py`'s prompt-assembly test updated to match — it
+previously pinned the exact Go-ported citation clause byte-for-byte; that
+test now documents this as a deliberate divergence from Go parity.
+
+Original finding, superseded by the above:
 
 The model cites section/page numbers that don't match the `page` field of
 any actually-retrieved chunk. Two mechanisms observed:
@@ -196,13 +225,9 @@ it may just mean nobody checked *this* axis yet.
 
 ## Suggested next step
 
-Theme #1 (`bad-refusal`) is **fixed and verified** (see above). Theme #2
-(citation hallucination) is better suited to a code-based enforcement check
-than a prompt fix, since the prompt already asks for correct citations and
-the model still drifts — that's the natural next piece: a deterministic
-check (`Page N` / `p.N` parsed from the output, diffed against
-`{chunk.page for chunk in retrieved}`) that flags a trace automatically
-instead of relying on a human noticing during open coding. Beyond that:
-extend the corpus toward intent.md's ~100-trace target, ideally with real
-usage now that one real fix has shipped, to see whether it holds up outside
-this session's hand-picked question set.
+Themes #1 (`bad-refusal`) and #2 (citation hallucination) are both **fixed
+and verified**. Next: extend the corpus toward intent.md's ~100-trace
+target, ideally with real usage now that two real fixes have shipped, to
+see whether they hold up outside this session's hand-picked question set —
+and to see what the next-highest-evidence theme is once these two stop
+showing up.

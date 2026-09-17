@@ -214,8 +214,8 @@
           <!-- generation fail chips -->
           <line x1="570" y1="90" x2="570" y2="112" stroke="var(--fail)" stroke-width="1.5"/>
           <g font-family="IBM Plex Mono, monospace" font-size="10.5">
-            <rect x="470" y="112" width="200" height="26" rx="13" fill="var(--fail-soft)" stroke="var(--fail)"/>
-            <text x="570" y="129" text-anchor="middle" fill="var(--fail)" font-weight="600">citation hallucination ×3</text>
+            <rect x="450" y="112" width="240" height="26" rx="13" fill="var(--pass-soft)" stroke="var(--pass)"/>
+            <text x="570" y="129" text-anchor="middle" fill="var(--pass)" font-weight="600">citation hallucination — fixed</text>
 
             <rect x="450" y="146" width="240" height="24" rx="12" fill="var(--pass-soft)" stroke="var(--pass)"/>
             <text x="570" y="162" text-anchor="middle" fill="var(--pass)" font-weight="600">bad-refusal ×5 — fixed</text>
@@ -292,7 +292,7 @@
             <td>Label 100–200 examples <em>per failure mode</em> before an LLM judge; validate with TPR/TNR on a held-out 40–45% test split.</td>
             <td>Prefer code-based → model-based → human, by cost/speed/nuance. Add partial credit for multi-part tasks.</td>
             <td>Explicitly: "prefer code-based → model-based → human" — automation cost is a repeated cost, design for it.</td>
-            <td class="us">No LLM-judge grader built — still correct at n=1 for guardrail-bypass, nowhere near 100–200. But one theme (bad-refusal, 5 examples) needed no grader at all: root cause was a single hardcoded prompt line, fixed directly and verified live. Citation grounding (3 examples) is code-gradable today; see §03.</td>
+            <td class="us">No LLM-judge grader built — still correct at n=1 for guardrail-bypass, nowhere near 100–200. Two themes (bad-refusal ×5, citation-hallucination ×3) needed no grader at all: both root-caused to specific prompt text and fixed directly, verified live. A grader would only have detected citation drift, not stopped it — see §03.</td>
           </tr>
           <tr>
             <td class="row-label">Rubric timing</td>
@@ -310,7 +310,7 @@
     <h2><span class="num">03</span>Grading-tier ladder — what each finding actually needs</h2>
     <p class="lede">
       The cookbook's ordering (code-based → model-based → human) isn't a suggestion to skim —
-      applied to our own 8 FAILs, most of them don't need an LLM judge at all.
+      applied to our own 14 FAILs, most of them don't need an LLM judge at all.
     </p>
     <div class="ladder">
 
@@ -345,15 +345,19 @@
         <div class="chips">
           <span class="chip stage">generation</span>
           <span class="chip freq">3 / 35</span>
-          <span class="chip tier-code">code-based</span>
+          <span class="chip fixed">fixed — by removal</span>
         </div>
         <p class="desc">
-          <span class="mono">testrun0001, seed0012, seed0029</span> — the model cites a page
-          number that doesn't match any chunk actually in the retrieved set. This is a set-membership
-          check: parse every <span class="mono">Page&nbsp;N</span> / <span class="mono">p.N</span> in
-          the output, diff against <span class="mono">{chunk.page for chunk in retrieved}</span>.
-          Deterministic, no LLM needed — a regex-and-set-diff prototype for exactly this already
-          exists from this session's read-through; it just isn't wired into the pipeline yet.
+          <span class="mono">testrun0001, seed0012, seed0029</span> — the model cited a page
+          number that appeared somewhere in the retrieved text but didn't match the actual chunk's
+          own <span class="mono">[Page N]</span> tag it came from. Considered a code-based grader
+          (regex + set-diff, deterministic, no LLM) — but a grader only <em>detects</em> the bug, it
+          doesn't fix it. Scoping check first: confirmed all 3 cases share one mechanism (verified the
+          wrong number always appears somewhere in the retrieved text, never fabricated from nothing),
+          which meant one prompt change had a real shot at closing all 3 at once. Decision: stop asking
+          for citations entirely rather than try to make the model cite correctly — removed the
+          citation instruction from <span class="mono">app/rag.py</span>'s prompt template. Verified
+          live: reran all 3 known cases, zero citation-like patterns in any output, answer quality held.
         </p>
       </div>
 
@@ -460,10 +464,10 @@
           <p class="step-why">Highest-evidence theme (5/35) after the manual re-read, and the most fix-ready: single system-prompt line, no new capture or grading work needed. Shipped and verified live against all 5 failing questions plus 2 controls — see §03.</p>
         </div>
       </li>
-      <li>
+      <li style="opacity:.6">
         <div>
-          <p class="step-title">Wire the citation-grounding check in as a real code-based grader</p>
-          <p class="step-why">Now the leading unresolved theme: 3 of 14 FAILs. It's a regex + set-diff over data already captured in every trace — no new capture work, no LLM call, runs on every trace automatically going forward. Unlike bad-refusal, this one isn't fixable by a prompt tweak alone — the prompt already asks for correct citations and the model still drifts, so it needs a deterministic check, not another instruction.</p>
+          <p class="step-title">✓ done — Remove citations entirely rather than fix them</p>
+          <p class="step-why">Reconsidered mid-flight: a grader only detects the bug, it doesn't fix it, and prevention-via-prompt can't be proven to reach zero. Since citations weren't load-bearing for the product, removing the instruction to cite at all closes the failure mode outright instead of managing it. Verified live against all 3 known cases.</p>
         </div>
       </li>
       <li>

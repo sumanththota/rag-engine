@@ -48,7 +48,13 @@ def make_service(embed_client=None, store=None, **kwargs):
 # --- build_prompt: happy path, prompt assembly ---
 
 
-async def test_build_prompt_assembles_context_and_matches_go_template():
+async def test_build_prompt_assembles_context_and_forbids_citations():
+    # Deliberately diverges from the original Go template here: citations were
+    # a recurring hallucination source in eval error analysis (see
+    # docs/evals/phase2-findings.md) — the model cited page/section numbers
+    # pulled from elsewhere in the retrieved text instead of a chunk's own
+    # [Page N] tag. Removing the citation instruction entirely closes that
+    # failure mode instead of trying to make the model follow it correctly.
     embed_client = AsyncMock()
     embed_client.embed.return_value = [0.1, 0.2]
     store = AsyncMock()
@@ -72,7 +78,7 @@ async def test_build_prompt_assembles_context_and_matches_go_template():
     assert "Question: What is the GPA policy?" in prompt
     assert prompt.startswith("Context (retrieved from handbook):\n")
     assert prompt.endswith(
-        "Do not cite for greetings, simple clarifications, or conversational replies.]\n\t"
+        "the context is for your reference only, not for quoting back.]\n\t"
     )
     assert result.rewrite_outcome.status == RewriteOutcomeStatus.NOT_CONFIGURED
 
