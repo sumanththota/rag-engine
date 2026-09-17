@@ -19,3 +19,7 @@ _Avoid_: Stage.
 **Annotation**:
 A human-authored PASS/FAIL judgment with a free-text note and free-form tags, attached to a Trace during review.
 _Avoid_: Label, Score, Rating.
+
+**Thread**:
+An end user's multi-turn chat conversation: a title plus an ordered list of messages. Distinct from a Trace — a Thread is the user-facing conversation; a Trace is one turn's dev-facing eval record. Anonymous users keep Threads client-side only (`localStorage`); logging in persists them server-side, keyed by user.
+_Avoid_: Session, History, Chat.
