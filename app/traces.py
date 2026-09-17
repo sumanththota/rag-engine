@@ -94,6 +94,23 @@ class TraceDetail(BaseModel):
     steps: list[TraceStep]
 
 
+class TraceCounts(BaseModel):
+    """Total vs. unannotated Trace counts, for the thread list's filter bar."""
+
+    total: int
+    unannotated: int
+
+
+class TraceNeighbors(BaseModel):
+    """The trace_ids adjacent to a Trace in thread-list order (created_at
+    DESC), for the detail page's Prev/Next navigation. None at either end
+    of the list, or when the current trace no longer matches the active
+    filter (e.g. it was just annotated out of an unannotated-only view)."""
+
+    prev_id: str | None = None
+    next_id: str | None = None
+
+
 class TraceStore:
     """Postgres-backed writer for the `traces` table (hybrid schema per
     ADR-0002: flat trace_id/created_at/question/Annotation columns, plus
@@ -147,17 +164,19 @@ class TraceStore:
         except (*_DB_ERRORS, TypeError, ValueError) as e:
             raise TraceError(f"write failed for trace_id={trace_id!r}: {e}") from e
 
-    async def list_recent(self, limit: int = 50) -> list[TraceSummary]:
+    async def list_recent(self, limit: int = 50, unannotated_only: bool = False) -> list[TraceSummary]:
         try:
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(
                     """
                     SELECT trace_id, created_at, question, status
                     FROM traces
-                    ORDER BY created_at DESC
+                    WHERE (NOT $2 OR status IS NULL)
+                    ORDER BY created_at DESC, trace_id DESC
                     LIMIT $1
                     """,
                     limit,
+                    unannotated_only,
                 )
         except _DB_ERRORS as e:
             raise TraceError(f"list_recent failed: {e}") from e
@@ -165,6 +184,42 @@ class TraceStore:
             return [TraceSummary(**dict(row)) for row in rows]
         except (ValidationError, TypeError) as e:
             raise TraceError(f"list_recent failed to parse rows: {e}") from e
+
+    async def counts(self) -> TraceCounts:
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status IS NULL) AS unannotated FROM traces"
+                )
+        except _DB_ERRORS as e:
+            raise TraceError(f"counts failed: {e}") from e
+        return TraceCounts(total=row["total"], unannotated=row["unannotated"])
+
+    async def neighbors(self, trace_id: str, unannotated_only: bool = False) -> TraceNeighbors:
+        """Prev/next trace_id in the same order as list_recent's WHERE/ORDER
+        BY, so a filtered thread list's Next/Prev stays inside that filter."""
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT prev_id, next_id FROM (
+                        SELECT
+                            trace_id,
+                            LAG(trace_id) OVER (ORDER BY created_at DESC, trace_id DESC) AS prev_id,
+                            LEAD(trace_id) OVER (ORDER BY created_at DESC, trace_id DESC) AS next_id
+                        FROM traces
+                        WHERE (NOT $2 OR status IS NULL)
+                    ) neighbors
+                    WHERE trace_id = $1
+                    """,
+                    trace_id,
+                    unannotated_only,
+                )
+        except _DB_ERRORS as e:
+            raise TraceError(f"neighbors failed for trace_id={trace_id!r}: {e}") from e
+        if row is None:
+            return TraceNeighbors()
+        return TraceNeighbors(prev_id=row["prev_id"], next_id=row["next_id"])
 
     async def get(self, trace_id: str) -> TraceDetail | None:
         try:
