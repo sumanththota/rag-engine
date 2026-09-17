@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from starlette.background import BackgroundTasks
 
 from app.config import Settings, load_config
@@ -36,7 +36,17 @@ from app.llm import OpenAICompatibleClient
 from app.logging_utils import configure_logging, new_trace_id, trace_id_var
 from app.rag import RagError, RagService
 from app.store import PostgresStore
-from app.traces import GenerateStep, RetrieveStep, RewriteStep, TraceError, TraceStep, TraceStore
+from app.traces import (
+    AnnotationStatus,
+    GenerateStep,
+    RetrieveStep,
+    RewriteStep,
+    TraceDetail,
+    TraceError,
+    TraceStep,
+    TraceStore,
+    TraceSummary,
+)
 
 logger = logging.getLogger("server")
 
@@ -120,6 +130,156 @@ def encode_stream_error_payload(app_err: AppError) -> str:
 
 def new_req_id() -> str:
     return f"{random.getrandbits(32):08x}"
+
+
+# ---- traces review UI (ticket 4) --------------------------------------
+
+_TRACES_PAGE_STYLE = """
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f4f6f9; color: #1a1a2e; line-height: 1.5; }
+    header { background: #1a1a2e; color: #fff; padding: 1.25rem 2rem; }
+    header h1 { font-size: 1.25rem; }
+    header a { color: #aab4c8; text-decoration: none; font-size: 0.85rem; }
+    main { max-width: 900px; margin: 0 auto; padding: 1.5rem 2rem; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    th { background: #f0f2f5; padding: 0.6rem 0.9rem; text-align: left; font-size: 0.8rem; }
+    td { padding: 0.6rem 0.9rem; border-top: 1px solid #eee; font-size: 0.85rem; }
+    tr:hover td { background: rgba(67,97,238,.04); }
+    a.trace-link { color: #4361ee; text-decoration: none; font-family: monospace; }
+    .badge { display: inline-block; font-size: 0.72rem; font-weight: 700; border-radius: 99px; padding: 0.1rem 0.6rem; }
+    .badge.pass { background: #e3f8ec; color: #147a4a; }
+    .badge.fail { background: #fdeaea; color: #b00020; }
+    .badge.unannotated { background: #eef0fb; color: #666; }
+    .badge.ran { background: #e3f8ec; color: #147a4a; }
+    .badge.not_configured { background: #eef0fb; color: #666; }
+    .badge.failed_fallback { background: #fdeaea; color: #b00020; }
+    .step { background: #fff; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    .step h3 { font-size: 0.9rem; margin-bottom: 0.5rem; }
+    .step pre { white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; background: #f7f8fc; border-radius: 6px; padding: 0.6rem; margin-top: 0.4rem; }
+    .chunk { border-left: 3px solid #4361ee; background: #f7f8fc; border-radius: 6px; padding: 0.5rem 0.7rem; margin-top: 0.4rem; font-size: 0.8rem; }
+    .chunk-meta { color: #888; font-size: 0.72rem; margin-bottom: 0.2rem; }
+    .error-text { color: #b00020; font-size: 0.8rem; margin-top: 0.4rem; }
+    .annotate-form { background: #fff; border-radius: 8px; padding: 1rem 1.25rem; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    .annotate-form label { display: block; font-size: 0.8rem; font-weight: 600; margin: 0.6rem 0 0.2rem; }
+    .annotate-form textarea, .annotate-form input[type=text] { width: 100%; padding: 0.5rem; border: 1px solid #d0d5dd; border-radius: 6px; font-size: 0.85rem; font-family: inherit; }
+    .annotate-form .status-choice { display: flex; gap: 1rem; }
+    .annotate-form button { margin-top: 0.75rem; background: #4361ee; color: #fff; border: none; border-radius: 6px; padding: 0.5rem 1.1rem; font-size: 0.85rem; cursor: pointer; }
+    .empty { color: #999; padding: 2rem; text-align: center; }
+  </style>
+"""
+
+
+def _status_badge(status: str | None) -> str:
+    if not status:
+        return '<span class="badge unannotated">unannotated</span>'
+    css = (
+        "pass" if status == AnnotationStatus.PASS.value
+        else "fail" if status == AnnotationStatus.FAIL.value
+        else "unannotated"
+    )
+    return f'<span class="badge {css}">{html.escape(status)}</span>'
+
+
+def _rewrite_status_badge(status: str) -> str:
+    return f'<span class="badge {html.escape(status)}">{html.escape(status)}</span>'
+
+
+def _step_html(step: TraceStep) -> str:
+    if isinstance(step, RewriteStep):
+        rows = [f"<h3>Rewrite {_rewrite_status_badge(step.status.value)}</h3>"]
+        if step.original_question:
+            rows.append(f"<pre>original: {html.escape(step.original_question)}</pre>")
+        if step.rewritten_query:
+            rows.append(f"<pre>rewritten: {html.escape(step.rewritten_query)}</pre>")
+        return f'<div class="step">{"".join(rows)}</div>'
+
+    if isinstance(step, RetrieveStep):
+        rows = [f"<h3>Retrieve ({len(step.results)} results)</h3>"]
+        for r in step.results:
+            rows.append(
+                f'<div class="chunk"><div class="chunk-meta">page {r.page} · score {r.score:.4f}</div>'
+                f"{html.escape(r.text)}</div>"
+            )
+        if step.error:
+            rows.append(f'<div class="error-text">{html.escape(step.error)}</div>')
+        return f'<div class="step">{"".join(rows)}</div>'
+
+    if isinstance(step, GenerateStep):
+        rows = [
+            "<h3>Generate</h3>",
+            f"<pre>{html.escape(step.prompt)}</pre>",
+            f"<pre>{html.escape(step.output)}</pre>",
+        ]
+        if step.error:
+            rows.append(f'<div class="error-text">{html.escape(step.error)}</div>')
+        return f'<div class="step">{"".join(rows)}</div>'
+
+    return f'<div class="step">Unknown step type: {html.escape(str(getattr(step, "type", "?")))}</div>'
+
+
+def _page_shell(title: str, header_html: str, body_html: str) -> str:
+    return (
+        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\"/>"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>"
+        f"<title>{title}</title>{_TRACES_PAGE_STYLE}</head><body>"
+        f"<header>{header_html}</header>"
+        f"<main>{body_html}</main>"
+        "</body></html>"
+    )
+
+
+def _traces_list_html(traces: list[TraceSummary]) -> str:
+    if not traces:
+        rows_html = '<div class="empty">No traces yet — chat turns are captured automatically once you ask a question.</div>'
+    else:
+        rows = []
+        for t in traces:
+            question = t.question if len(t.question) <= 120 else t.question[:117] + "…"
+            rows.append(
+                "<tr>"
+                f'<td><a class="trace-link" href="/traces/{urllib.parse.quote(t.trace_id)}">{html.escape(t.trace_id)}</a></td>'
+                f"<td>{html.escape(t.created_at.isoformat())}</td>"
+                f"<td>{html.escape(question)}</td>"
+                f"<td>{_status_badge(t.status)}</td>"
+                "</tr>"
+            )
+        rows_html = (
+            "<table><thead><tr><th>Trace</th><th>Created</th><th>Question</th><th>Status</th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>"
+        )
+
+    return _page_shell("Traces", "<h1>Traces</h1>", rows_html)
+
+
+def _trace_detail_html(trace: TraceDetail) -> str:
+    steps_html = "".join(_step_html(step) for step in trace.steps)
+    tags_value = html.escape(", ".join(trace.tags))
+    note_value = html.escape(trace.note or "")
+
+    status_choices = []
+    for s in AnnotationStatus:
+        checked = " checked" if trace.status == s.value else ""
+        status_choices.append(
+            f'<label><input type="radio" name="status" value="{s.value}"{checked}/> {s.value}</label>'
+        )
+
+    body_html = (
+        f"{steps_html}"
+        '<div class="annotate-form">'
+        "<h3>Annotation</h3>"
+        f'<form method="post" action="/traces/{urllib.parse.quote(trace.trace_id)}/annotate">'
+        f'<div class="status-choice">{"".join(status_choices)}</div>'
+        '<label for="note">Note</label>'
+        f'<textarea id="note" name="note" rows="3">{note_value}</textarea>'
+        '<label for="tags">Tags (comma-separated)</label>'
+        f'<input id="tags" type="text" name="tags" value="{tags_value}"/>'
+        "<button type=\"submit\">Save</button>"
+        "</form>"
+        "</div>"
+    )
+    header_html = f'<a href="/traces">&larr; Traces</a><h1>{html.escape(trace.question)}</h1>'
+    return _page_shell(f"Trace {html.escape(trace.trace_id)}", header_html, body_html)
 
 
 def create_app(
@@ -529,6 +689,65 @@ def create_app(
         finally:
             if not reset_deferred:
                 trace_id_var.reset(trace_token)
+
+    # ---- traces review (ticket 4) ---------------------------------------
+
+    @app.get("/traces")
+    async def traces_list() -> HTMLResponse:
+        try:
+            traces = await trace_store.list_recent()
+        except TraceError as err:
+            logger.warning("traces list failed err=%s", err, extra={"stage": "http"})
+            return HTMLResponse(_traces_list_html([]), status_code=500)
+        return HTMLResponse(_traces_list_html(traces))
+
+    @app.get("/traces/{trace_id}")
+    async def trace_detail(trace_id: str) -> HTMLResponse:
+        # trace_id is the Trace being reviewed, so it's the natural scope for
+        # trace_id_var here (spec story 17: correlate a Trace's review-UI
+        # activity with its own capture logs via the same trace_id).
+        token = trace_id_var.set(trace_id)
+        try:
+            try:
+                trace = await trace_store.get(trace_id)
+            except TraceError as err:
+                logger.warning("trace detail failed err=%s", err, extra={"stage": "http"})
+                return HTMLResponse("<p>Could not load trace.</p>", status_code=500)
+            if trace is None:
+                return HTMLResponse("<p>Trace not found.</p>", status_code=404)
+            return HTMLResponse(_trace_detail_html(trace))
+        finally:
+            trace_id_var.reset(token)
+
+    @app.post("/traces/{trace_id}/annotate")
+    async def annotate_trace(trace_id: str, request: Request):
+        token = trace_id_var.set(trace_id)
+        try:
+            form = await request.form()
+            status_raw = str(form.get("status", "")).strip()
+            note = str(form.get("note", "")).strip()
+            tags = [t.strip() for t in str(form.get("tags", "")).split(",") if t.strip()]
+
+            try:
+                status = AnnotationStatus(status_raw)
+            except ValueError:
+                valid = [s.value for s in AnnotationStatus]
+                return PlainTextResponse(f"status must be one of {valid}", status_code=400)
+
+            try:
+                updated = await trace_store.annotate(trace_id, status, note, tags)
+            except TraceError as err:
+                logger.warning("annotate failed err=%s", err, extra={"stage": "http"})
+                return HTMLResponse("<p>Could not save annotation.</p>", status_code=500)
+
+            if not updated:
+                return HTMLResponse("<p>Trace not found.</p>", status_code=404)
+
+            return RedirectResponse(
+                url=f"/traces/{urllib.parse.quote(trace_id)}", status_code=303
+            )
+        finally:
+            trace_id_var.reset(token)
 
     return app
 

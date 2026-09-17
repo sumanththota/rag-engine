@@ -688,3 +688,276 @@ async def test_chat_stream_rewrite_llm_failure_falls_back_and_completes_turn():
         if trace_id:
             await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
         await pool.close()
+
+
+# ---- Ticket 4: review UI (thread list, detail, annotate) ----
+#
+# Same _TRACES_DSN seam as tickets 2/3, plus the spec's own prescribed shape
+# for these tests: drive a full chat turn for fixture data, then verify
+# through GET /traces and GET /traces/{trace_id} rather than querying
+# Postgres directly (docs/evals/phase1-spec.md Testing Decisions).
+
+
+async def _drive_chat_turn(client: AsyncClient, question: str, model_id: str) -> str:
+    start_resp = await client.post("/chat/start", data={"question": question, "model_id": model_id})
+    assert start_resp.status_code == 200
+    trace_id = _extract_trace_id_from_start_body(start_resp.text)
+
+    stream_resp = await client.get(
+        "/chat/stream",
+        params={"question": question, "model_id": model_id, "trace_id": trace_id},
+    )
+    assert stream_resp.status_code == 200
+    return trace_id
+
+
+async def test_traces_list_shows_recent_trace():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+
+    svc = RagService(
+        store=_FakeRetrievalStore(),
+        embed_client=_FakeEmbedClient(),
+        collection="handbook_chunks",
+        top_k=10,
+        pdf_path="unused.pdf",
+    )
+    provider_clients = {"groq": _FakeProviderClient()}
+    api_keys = {"GROQ_API_KEY": "test-key"}
+    app = _app_for(svc, provider_clients, api_keys, trace_store=trace_store)
+
+    trace_id = None
+    try:
+        async with _async_client(app) as client:
+            trace_id = await _drive_chat_turn(client, "What is the attendance policy?", "groq_llama31_8b")
+
+            list_resp = await client.get("/traces")
+
+        assert list_resp.status_code == 200
+        assert trace_id in list_resp.text
+        assert "What is the attendance policy?" in list_resp.text
+    finally:
+        if trace_id:
+            await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
+
+
+async def test_traces_list_empty_state():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+    svc = await _unreachable_rag_service()
+    app = _app_for(svc, trace_store=trace_store)
+
+    try:
+        async with _async_client(app) as client:
+            list_resp = await client.get("/traces")
+
+        assert list_resp.status_code == 200
+        assert "no traces" in list_resp.text.lower()
+    finally:
+        await pool.close()
+
+
+async def test_trace_detail_renders_steps_and_not_configured_rewrite_marker():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+
+    svc = RagService(
+        store=_FakeRetrievalStore(),
+        embed_client=_FakeEmbedClient(),
+        collection="handbook_chunks",
+        top_k=10,
+        pdf_path="unused.pdf",
+    )
+    provider_clients = {"groq": _FakeProviderClient()}
+    api_keys = {"GROQ_API_KEY": "test-key"}
+    app = _app_for(svc, provider_clients, api_keys, trace_store=trace_store)
+
+    trace_id = None
+    try:
+        async with _async_client(app) as client:
+            trace_id = await _drive_chat_turn(client, "What is the attendance policy?", "groq_llama31_8b")
+
+            detail_resp = await client.get(f"/traces/{trace_id}")
+
+        assert detail_resp.status_code == 200
+        body = detail_resp.text
+        assert "What is the attendance policy?" in body
+        assert "not configured" in body.lower() or "not_configured" in body.lower()
+        assert "Attendance policy requires 80% presence." in body
+        assert "12" in body  # page number
+        assert "Attendance policy: 80% presence required." in body  # generate output
+    finally:
+        if trace_id:
+            await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
+
+
+async def test_trace_detail_renders_failed_fallback_rewrite_marker():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+
+    svc = RagService(
+        store=_FakeRetrievalStore(),
+        embed_client=_FakeEmbedClient(),
+        collection="handbook_chunks",
+        top_k=10,
+        pdf_path="unused.pdf",
+    )
+    svc.set_query_rewriter(_FakeBadJsonRewriterClient(), "rewrite-key", "rewrite-model")
+    provider_clients = {"groq": _FakeProviderClient()}
+    api_keys = {"GROQ_API_KEY": "test-key"}
+    app = _app_for(svc, provider_clients, api_keys, trace_store=trace_store)
+
+    trace_id = None
+    try:
+        async with _async_client(app) as client:
+            trace_id = await _drive_chat_turn(client, "What is the attendance policy?", "groq_llama31_8b")
+
+            detail_resp = await client.get(f"/traces/{trace_id}")
+
+        assert detail_resp.status_code == 200
+        assert "failed" in detail_resp.text.lower()
+    finally:
+        if trace_id:
+            await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
+
+
+async def test_trace_detail_unknown_trace_id_returns_404():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+    svc = await _unreachable_rag_service()
+    app = _app_for(svc, trace_store=trace_store)
+
+    try:
+        async with _async_client(app) as client:
+            resp = await client.get("/traces/does-not-exist")
+        assert resp.status_code == 404
+    finally:
+        await pool.close()
+
+
+async def test_trace_detail_escapes_question_html():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+
+    trace_id = "escape-test-trace"
+    try:
+        await trace_store.write(trace_id, "<script>alert(1)</script>", [])
+
+        svc = await _unreachable_rag_service()
+        app = _app_for(svc, trace_store=trace_store)
+        async with _async_client(app) as client:
+            resp = await client.get(f"/traces/{trace_id}")
+
+        assert resp.status_code == 200
+        assert "<script>alert(1)</script>" not in resp.text
+        assert "&lt;script&gt;" in resp.text
+    finally:
+        await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
+
+
+async def test_annotate_round_trip_persists_and_reflects_in_detail():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+
+    svc = RagService(
+        store=_FakeRetrievalStore(),
+        embed_client=_FakeEmbedClient(),
+        collection="handbook_chunks",
+        top_k=10,
+        pdf_path="unused.pdf",
+    )
+    provider_clients = {"groq": _FakeProviderClient()}
+    api_keys = {"GROQ_API_KEY": "test-key"}
+    app = _app_for(svc, provider_clients, api_keys, trace_store=trace_store)
+
+    trace_id = None
+    try:
+        async with _async_client(app) as client:
+            trace_id = await _drive_chat_turn(client, "What is the attendance policy?", "groq_llama31_8b")
+
+            annotate_resp = await client.post(
+                f"/traces/{trace_id}/annotate",
+                data={"status": "PASS", "note": "Looks correct.", "tags": "attendance, good"},
+            )
+            assert annotate_resp.status_code == 303
+            assert annotate_resp.headers["location"] == f"/traces/{trace_id}"
+
+            detail_resp = await client.get(f"/traces/{trace_id}")
+
+        row = await pool.fetchrow(
+            "SELECT status, note, tags FROM traces WHERE trace_id = $1", trace_id
+        )
+        assert row["status"] == "PASS"
+        assert row["note"] == "Looks correct."
+        assert list(row["tags"]) == ["attendance", "good"]
+
+        body = detail_resp.text
+        assert "PASS" in body
+        assert "Looks correct." in body
+        assert "attendance" in body
+        assert "good" in body
+    finally:
+        if trace_id:
+            await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
+
+
+async def test_annotate_unknown_trace_id_returns_404():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+    svc = await _unreachable_rag_service()
+    app = _app_for(svc, trace_store=trace_store)
+
+    try:
+        async with _async_client(app) as client:
+            resp = await client.post(
+                "/traces/does-not-exist/annotate",
+                data={"status": "PASS", "note": "", "tags": ""},
+            )
+        assert resp.status_code == 404
+    finally:
+        await pool.close()
+
+
+async def test_annotate_invalid_status_returns_400():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+
+    svc = RagService(
+        store=_FakeRetrievalStore(),
+        embed_client=_FakeEmbedClient(),
+        collection="handbook_chunks",
+        top_k=10,
+        pdf_path="unused.pdf",
+    )
+    provider_clients = {"groq": _FakeProviderClient()}
+    api_keys = {"GROQ_API_KEY": "test-key"}
+    app = _app_for(svc, provider_clients, api_keys, trace_store=trace_store)
+
+    trace_id = None
+    try:
+        async with _async_client(app) as client:
+            trace_id = await _drive_chat_turn(client, "What is the attendance policy?", "groq_llama31_8b")
+
+            resp = await client.post(
+                f"/traces/{trace_id}/annotate",
+                data={"status": "MAYBE", "note": "", "tags": ""},
+            )
+        assert resp.status_code == 400
+    finally:
+        if trace_id:
+            await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
