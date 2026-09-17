@@ -79,51 +79,19 @@ ahead.
 
 ## Decisions confirmed for phase 1 (Capture + Review)
 
-- **Storage**: Postgres table, same asyncpg pool the vector store already
-  uses — not a JSONL file, and not derived from the local Loki/Grafana
-  stack. Annotation writes are plain `UPDATE`s. See
-  [ADR-0001](../adr/0001-postgres-capture-not-loki.md).
-- **Trace schema shape**: flat columns for `trace_id` / `created_at` /
-  `question` / the annotation fields (`status`, `note`, `tags`), plus one
-  `steps jsonb` column for the pipeline (rewrite/retrieve/generate). See
-  [ADR-0002](../adr/0002-hybrid-trace-schema.md).
-- **Capture point**: inside `RagService` + `chat_stream`'s
-  `event_stream()` in `app/main.py`, reusing the existing `trace_id`.
-  `RagService` itself stays trace-agnostic — `build_prompt` widens its
-  return value (a new small result type bundling the prompt, retrieval
-  results, and rewrite outcome) instead of taking a trace-writer
-  dependency; `event_stream()` assembles and writes the Trace.
-- **Write timing**: fire-and-forget, via a `BackgroundTask` that runs
-  after the SSE stream finishes — the same mechanism `chat_stream`
-  already uses to reset `trace_id_var`. A slow or failed write never adds
-  latency to, or breaks, the chat response.
-- **Capture scope**: chat turns only (`/chat/stream`), not
-  `/docs/upload` or `/ingest` — ingestion already has its own logging and
-  the separate `app/cli/eval.py` batch harness.
-- **Failure handling**: partial/failed turns are captured too, not
-  dropped — steps and/or the trace carry an error field. These are
-  exactly the highest-signal cases for phase 2's error analysis.
-- **Rewrite step is always recorded**: even when no rewriter is
-  configured, or the LLM rewrite call fails and falls back to the raw
-  question, the step records *why* (ran / not configured / failed and
-  fell back) — otherwise those two cases are indistinguishable in review.
-- **Routes**: new `/traces` (thread list) + `/traces/{trace_id}` (detail
-  + annotate), flat naming matching the app's existing route style
-  (`/chat/start`, `/docs/upload`). Annotation write is a
-  `POST /traces/{trace_id}/annotate`.
-- **UI**: FastAPI + server-rendered HTML, matching the existing
-  `index.html` / `dashboard.html` pattern in `app/templates/`. The
-  trace-detail panel renders steps generically, dispatching on
-  `step.type` — today that's just rewrite/retrieve/generate, but a
-  future `tool_call`/`tool_response` step type (see "Current system"
-  above — no real tool-calling exists yet) renders without a UI change
-  once one is added.
-- **Annotation shape**: binary PASS/FAIL (not a 1-5 scale) + a free-text
-  note as the primary artifact (this *is* open coding) + free-form tags —
-  no fixed taxonomy yet, since one doesn't exist until phase 2 produces
-  it.
-- **Process weight**: solo-dev context — the user is the "benevolent
-  dictator," no multi-annotator/inter-annotator-agreement process needed.
+Implementation decisions (schema, capture point, write timing, routes, UI
+pattern) are fully specified in
+[phase1-spec.md](./phase1-spec.md#implementation-decisions) and its ADRs
+([0001](../adr/0001-postgres-capture-not-loki.md),
+[0002](../adr/0002-hybrid-trace-schema.md)) — not restated here, so the two
+docs can't drift out of sync. Two methodology choices live here instead,
+since they're about *why* phase 1 looks this way, not *what* gets built:
+
+- **Annotation is binary PASS/FAIL + a free-text note**, not a 1-5 scale —
+  the note *is* open coding (see "Why" above); PASS/FAIL is just a coarse
+  filter for browsing later, not the signal itself.
+- **Process weight: solo-dev context.** The user is the "benevolent
+  dictator" — no multi-annotator/inter-annotator-agreement process needed.
   Keep phase 1 lightweight; don't build clustering/taxonomy tooling before
   there's any data to cluster.
 
