@@ -11,6 +11,7 @@ In progress. See the sibling Go repo's `docs/MIGRATION.md` for the full migratio
 - FastAPI, `httpx` for outbound HTTP (Ollama embeddings, OpenRouter/Groq chat)
 - Postgres + `pgvector` for vector storage and similarity search
 - SSE streaming for chat responses, matching the original HTMX frontend contract
+- Local Loki/Grafana stack (`observability/`) for structured-log aggregation, correlated by `trace_id`; promtail runs as a native host process rather than in Docker (see the comment in `observability/docker-compose.yml`)
 
 ## Setup
 

@@ -104,8 +104,11 @@ since they're about *why* phase 1 looks this way, not *what* gets built:
 
 ## Next step
 
-Implement phase 1 (Capture + Review) per the decisions above: the
-`traces` table, the widened `RagService` return value, capture wiring in
-`event_stream()`, and the `/traces` review UI. Phase 2 (error analysis)
-and beyond stay un-designed until phase 1 ships and produces real traces
-to read — see "Why" above on not skipping ahead.
+Phase 1 (Capture + Review) has shipped: the `traces` table, capture
+wiring in `event_stream()`, and the `/traces` review UI (filterable
+thread list, trace detail with rewrite/retrieve/generate steps, and
+PASS/FAIL annotation with notes and tags) are all live — see
+[phase1-spec.md](./phase1-spec.md). Next is phase 2 (error analysis):
+read ≥30 real traces yourself and start open coding per the roadmap
+above. Phase 3 and beyond stay un-designed until phase 2's taxonomy says
+what's actually worth building — see "Why" above on not skipping ahead.
