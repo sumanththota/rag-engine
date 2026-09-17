@@ -33,7 +33,8 @@ from app.llm import OpenAICompatibleClient
 from app.logging_utils import install_trace_id_filter, trace_id_var
 from app.main import create_app
 from app.rag import RagService
-from app.store import PostgresStore
+from app.store import PostgresStore, SearchResult
+from app.traces import TraceStore
 
 
 async def _unreachable_rag_service() -> RagService:
@@ -55,7 +56,9 @@ async def _unreachable_rag_service() -> RagService:
     )
 
 
-def _app_for(rag_service: RagService, provider_clients=None, api_keys=None, docs_dir=None) -> FastAPI:
+def _app_for(
+    rag_service: RagService, provider_clients=None, api_keys=None, docs_dir=None, trace_store=None
+) -> FastAPI:
     kwargs = {}
     if docs_dir is not None:
         kwargs["docs_dir"] = docs_dir
@@ -65,6 +68,10 @@ def _app_for(rag_service: RagService, provider_clients=None, api_keys=None, docs
         api_keys=api_keys or {},
         embed_client=OllamaClient("http://127.0.0.1:1"),
         store=PostgresStore(pool=None),
+        # Unused pool is safe: write_trace() only calls trace_store.write()
+        # along the full happy path, never exercised by the tests below
+        # that pass no explicit trace_store.
+        trace_store=trace_store or TraceStore(pool=None),
         **kwargs,
     )
 
@@ -393,3 +400,564 @@ async def test_handle_ingest_missing_trace_id_generates_fresh_one(caplog):
     assert generated_trace_id, "expected a freshly generated trace_id, not empty/None"
 
     assert trace_id_var.get() is None
+
+
+# ---- Ticket 2: capture the happy-path Trace to Postgres ----
+#
+# Unlike the tests above, this drives a real chat turn all the way through
+# rewrite/retrieve/generate. There's no live Ollama/LLM provider available
+# in CI, so embed_client/store/provider_client are faked at the same
+# duck-typed seam tests/test_rag.py already uses (RagService only calls
+# .embed()/.search()/.stream_answer() — it doesn't care whether the object
+# behind those calls is a real OllamaClient/PostgresStore/
+# OpenAICompatibleClient). The Postgres write itself is real (dev Postgres
+# at localhost:5433), per the spec's testing decisions — a capture write
+# only means something if it actually lands.
+
+_TRACES_DSN = "postgresql://handbook:handbook@localhost:5433/handbook"
+
+
+class _FakeEmbedClient:
+    async def embed(self, model: str, text: str) -> list[float]:
+        return [0.1, 0.2, 0.3]
+
+
+class _FakeRetrievalStore:
+    async def search(self, collection: str, vector: list[float], limit: int) -> list[SearchResult]:
+        return [SearchResult(text="Attendance policy requires 80% presence.", page=12, score=0.87)]
+
+
+class _FakeProviderClient:
+    async def stream_answer(self, api_key: str, model: str, prompt: str):
+        for token in ["Attendance ", "policy: ", "80% presence required."]:
+            yield token
+
+
+async def test_chat_stream_happy_path_writes_trace_with_all_three_steps():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+
+    svc = RagService(
+        store=_FakeRetrievalStore(),
+        embed_client=_FakeEmbedClient(),
+        collection="handbook_chunks",
+        top_k=10,
+        pdf_path="unused.pdf",
+    )
+    provider_clients = {"groq": _FakeProviderClient()}
+    api_keys = {"GROQ_API_KEY": "test-key"}
+
+    app = _app_for(svc, provider_clients, api_keys, trace_store=trace_store)
+
+    trace_id = None
+    try:
+        async with _async_client(app) as client:
+            start_resp = await client.post(
+                "/chat/start",
+                data={"question": "What is the attendance policy?", "model_id": "groq_llama31_8b"},
+            )
+            assert start_resp.status_code == 200
+            trace_id = _extract_trace_id_from_start_body(start_resp.text)
+
+            stream_resp = await client.get(
+                "/chat/stream",
+                params={
+                    "question": "What is the attendance policy?",
+                    "model_id": "groq_llama31_8b",
+                    "trace_id": trace_id,
+                },
+            )
+
+        assert stream_resp.status_code == 200
+        assert "event: done" in stream_resp.text
+
+        row = await pool.fetchrow(
+            "SELECT question, status, note, tags, steps FROM traces WHERE trace_id = $1",
+            trace_id,
+        )
+        assert row is not None, "expected the chat turn to have written a Trace row"
+        assert row["question"] == "What is the attendance policy?"
+        assert row["status"] is None
+        assert row["note"] is None
+        assert list(row["tags"]) == []
+
+        steps = json.loads(row["steps"])
+        assert [s["type"] for s in steps] == ["rewrite", "retrieve", "generate"]
+
+        rewrite_step, retrieve_step, generate_step = steps
+        assert rewrite_step["status"] == "not_configured"
+
+        assert len(retrieve_step["results"]) == 1
+        assert retrieve_step["results"][0]["text"] == "Attendance policy requires 80% presence."
+        assert retrieve_step["results"][0]["page"] == 12
+
+        assert "Attendance policy requires 80% presence." in generate_step["prompt"]
+        assert generate_step["output"] == "Attendance policy: 80% presence required."
+    finally:
+        if trace_id:
+            await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
+
+
+class _FakeFailingProviderClient:
+    async def stream_answer(self, api_key: str, model: str, prompt: str):
+        yield "partial answer "
+        raise RuntimeError("connection dropped mid-stream")
+
+
+class _FakeEmptyRetrievalStore:
+    async def search(self, collection: str, vector: list[float], limit: int) -> list[SearchResult]:
+        return []
+
+
+# ---- Ticket 3: capture failure paths ----
+#
+# Same fakes/seam as ticket 2's happy-path test above, plus a store that
+# always returns empty results (empty retrieval) and a rewriter LLM client
+# that never produces valid JSON (rewrite-LLM-failure) — driving each
+# failure deterministically through the real HTTP/ASGI seam, per the spec's
+# testing decisions.
+
+
+async def test_chat_stream_mid_generation_failure_writes_trace_with_error_on_generate_step():
+    # ticket 3: partial/failed turns must still produce a Trace (spec's
+    # "Failures are captured, not dropped") — this supersedes ticket 2's
+    # original "no partial Trace" behavior for this same failure.
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+
+    svc = RagService(
+        store=_FakeRetrievalStore(),
+        embed_client=_FakeEmbedClient(),
+        collection="handbook_chunks",
+        top_k=10,
+        pdf_path="unused.pdf",
+    )
+    provider_clients = {"groq": _FakeFailingProviderClient()}
+    api_keys = {"GROQ_API_KEY": "test-key"}
+
+    app = _app_for(svc, provider_clients, api_keys, trace_store=trace_store)
+
+    trace_id = None
+    try:
+        async with _async_client(app) as client:
+            start_resp = await client.post(
+                "/chat/start",
+                data={"question": "What is the attendance policy?", "model_id": "groq_llama31_8b"},
+            )
+            trace_id = _extract_trace_id_from_start_body(start_resp.text)
+
+            stream_resp = await client.get(
+                "/chat/stream",
+                params={
+                    "question": "What is the attendance policy?",
+                    "model_id": "groq_llama31_8b",
+                    "trace_id": trace_id,
+                },
+            )
+
+        assert stream_resp.status_code == 200
+        assert "event: streamerror" in stream_resp.text
+
+        row = await pool.fetchrow("SELECT steps FROM traces WHERE trace_id = $1", trace_id)
+        assert row is not None, "a mid-generation failure must still persist a Trace"
+
+        steps = json.loads(row["steps"])
+        assert [s["type"] for s in steps] == ["rewrite", "retrieve", "generate"]
+        rewrite_step, retrieve_step, generate_step = steps
+        assert rewrite_step["status"] == "not_configured"
+        assert retrieve_step["error"] is None
+        assert generate_step["output"] == "partial answer "
+        assert "connection dropped mid-stream" in generate_step["error"]
+    finally:
+        if trace_id:
+            await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
+
+
+async def test_chat_stream_empty_retrieval_writes_trace_with_error_on_retrieve_step():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+
+    svc = RagService(
+        store=_FakeEmptyRetrievalStore(),
+        embed_client=_FakeEmbedClient(),
+        collection="handbook_chunks",
+        top_k=10,
+        pdf_path="unused.pdf",
+    )
+    provider_clients = {"groq": _FakeProviderClient()}
+    api_keys = {"GROQ_API_KEY": "test-key"}
+
+    app = _app_for(svc, provider_clients, api_keys, trace_store=trace_store)
+
+    trace_id = None
+    try:
+        async with _async_client(app) as client:
+            start_resp = await client.post(
+                "/chat/start",
+                data={"question": "What is the attendance policy?", "model_id": "groq_llama31_8b"},
+            )
+            trace_id = _extract_trace_id_from_start_body(start_resp.text)
+
+            stream_resp = await client.get(
+                "/chat/stream",
+                params={
+                    "question": "What is the attendance policy?",
+                    "model_id": "groq_llama31_8b",
+                    "trace_id": trace_id,
+                },
+            )
+
+        assert stream_resp.status_code == 200
+        assert "event: streamerror" in stream_resp.text
+
+        row = await pool.fetchrow("SELECT steps FROM traces WHERE trace_id = $1", trace_id)
+        assert row is not None, "empty retrieval must still persist a Trace"
+
+        steps = json.loads(row["steps"])
+        assert [s["type"] for s in steps] == ["rewrite", "retrieve"]
+        rewrite_step, retrieve_step = steps
+        assert rewrite_step["status"] == "not_configured"
+        assert retrieve_step["results"] == []
+        assert "no context found" in retrieve_step["error"]
+    finally:
+        if trace_id:
+            await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
+
+
+class _FakeBadJsonRewriterClient:
+    async def complete(self, api_key: str, model: str, temperature: float, messages) -> str:
+        return "not json"
+
+
+async def test_chat_stream_rewrite_llm_failure_falls_back_and_completes_turn():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+
+    svc = RagService(
+        store=_FakeRetrievalStore(),
+        embed_client=_FakeEmbedClient(),
+        collection="handbook_chunks",
+        top_k=10,
+        pdf_path="unused.pdf",
+    )
+    svc.set_query_rewriter(_FakeBadJsonRewriterClient(), "rewrite-key", "rewrite-model")
+    provider_clients = {"groq": _FakeProviderClient()}
+    api_keys = {"GROQ_API_KEY": "test-key"}
+
+    app = _app_for(svc, provider_clients, api_keys, trace_store=trace_store)
+
+    trace_id = None
+    try:
+        async with _async_client(app) as client:
+            start_resp = await client.post(
+                "/chat/start",
+                data={"question": "What is the attendance policy?", "model_id": "groq_llama31_8b"},
+            )
+            trace_id = _extract_trace_id_from_start_body(start_resp.text)
+
+            stream_resp = await client.get(
+                "/chat/stream",
+                params={
+                    "question": "What is the attendance policy?",
+                    "model_id": "groq_llama31_8b",
+                    "trace_id": trace_id,
+                },
+            )
+
+        assert stream_resp.status_code == 200
+        assert "event: done" in stream_resp.text
+
+        row = await pool.fetchrow("SELECT steps FROM traces WHERE trace_id = $1", trace_id)
+        assert row is not None
+
+        steps = json.loads(row["steps"])
+        assert [s["type"] for s in steps] == ["rewrite", "retrieve", "generate"]
+        rewrite_step, retrieve_step, generate_step = steps
+        assert rewrite_step["status"] == "failed_fallback"
+        assert rewrite_step["original_question"] == "What is the attendance policy?"
+        assert len(retrieve_step["results"]) == 1
+        assert generate_step["output"] == "Attendance policy: 80% presence required."
+    finally:
+        if trace_id:
+            await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
+
+
+# ---- Ticket 4: review UI (thread list, detail, annotate) ----
+#
+# Same _TRACES_DSN seam as tickets 2/3, plus the spec's own prescribed shape
+# for these tests: drive a full chat turn for fixture data, then verify
+# through GET /traces and GET /traces/{trace_id} rather than querying
+# Postgres directly (docs/evals/phase1-spec.md Testing Decisions).
+
+
+async def _drive_chat_turn(client: AsyncClient, question: str, model_id: str) -> str:
+    start_resp = await client.post("/chat/start", data={"question": question, "model_id": model_id})
+    assert start_resp.status_code == 200
+    trace_id = _extract_trace_id_from_start_body(start_resp.text)
+
+    stream_resp = await client.get(
+        "/chat/stream",
+        params={"question": question, "model_id": model_id, "trace_id": trace_id},
+    )
+    assert stream_resp.status_code == 200
+    return trace_id
+
+
+async def test_traces_list_shows_recent_trace():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+
+    svc = RagService(
+        store=_FakeRetrievalStore(),
+        embed_client=_FakeEmbedClient(),
+        collection="handbook_chunks",
+        top_k=10,
+        pdf_path="unused.pdf",
+    )
+    provider_clients = {"groq": _FakeProviderClient()}
+    api_keys = {"GROQ_API_KEY": "test-key"}
+    app = _app_for(svc, provider_clients, api_keys, trace_store=trace_store)
+
+    trace_id = None
+    try:
+        async with _async_client(app) as client:
+            trace_id = await _drive_chat_turn(client, "What is the attendance policy?", "groq_llama31_8b")
+
+            list_resp = await client.get("/traces")
+
+        assert list_resp.status_code == 200
+        assert trace_id in list_resp.text
+        assert "What is the attendance policy?" in list_resp.text
+    finally:
+        if trace_id:
+            await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
+
+
+async def test_traces_list_empty_state():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+    svc = await _unreachable_rag_service()
+    app = _app_for(svc, trace_store=trace_store)
+
+    try:
+        async with _async_client(app) as client:
+            list_resp = await client.get("/traces")
+
+        assert list_resp.status_code == 200
+        assert "no traces" in list_resp.text.lower()
+    finally:
+        await pool.close()
+
+
+async def test_trace_detail_renders_steps_and_not_configured_rewrite_marker():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+
+    svc = RagService(
+        store=_FakeRetrievalStore(),
+        embed_client=_FakeEmbedClient(),
+        collection="handbook_chunks",
+        top_k=10,
+        pdf_path="unused.pdf",
+    )
+    provider_clients = {"groq": _FakeProviderClient()}
+    api_keys = {"GROQ_API_KEY": "test-key"}
+    app = _app_for(svc, provider_clients, api_keys, trace_store=trace_store)
+
+    trace_id = None
+    try:
+        async with _async_client(app) as client:
+            trace_id = await _drive_chat_turn(client, "What is the attendance policy?", "groq_llama31_8b")
+
+            detail_resp = await client.get(f"/traces/{trace_id}")
+
+        assert detail_resp.status_code == 200
+        body = detail_resp.text
+        assert "What is the attendance policy?" in body
+        assert "not configured" in body.lower() or "not_configured" in body.lower()
+        assert "Attendance policy requires 80% presence." in body
+        assert "12" in body  # page number
+        assert "Attendance policy: 80% presence required." in body  # generate output
+    finally:
+        if trace_id:
+            await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
+
+
+async def test_trace_detail_renders_failed_fallback_rewrite_marker():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+
+    svc = RagService(
+        store=_FakeRetrievalStore(),
+        embed_client=_FakeEmbedClient(),
+        collection="handbook_chunks",
+        top_k=10,
+        pdf_path="unused.pdf",
+    )
+    svc.set_query_rewriter(_FakeBadJsonRewriterClient(), "rewrite-key", "rewrite-model")
+    provider_clients = {"groq": _FakeProviderClient()}
+    api_keys = {"GROQ_API_KEY": "test-key"}
+    app = _app_for(svc, provider_clients, api_keys, trace_store=trace_store)
+
+    trace_id = None
+    try:
+        async with _async_client(app) as client:
+            trace_id = await _drive_chat_turn(client, "What is the attendance policy?", "groq_llama31_8b")
+
+            detail_resp = await client.get(f"/traces/{trace_id}")
+
+        assert detail_resp.status_code == 200
+        assert "failed" in detail_resp.text.lower()
+    finally:
+        if trace_id:
+            await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
+
+
+async def test_trace_detail_unknown_trace_id_returns_404():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+    svc = await _unreachable_rag_service()
+    app = _app_for(svc, trace_store=trace_store)
+
+    try:
+        async with _async_client(app) as client:
+            resp = await client.get("/traces/does-not-exist")
+        assert resp.status_code == 404
+    finally:
+        await pool.close()
+
+
+async def test_trace_detail_escapes_question_html():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+
+    trace_id = "escape-test-trace"
+    try:
+        await trace_store.write(trace_id, "<script>alert(1)</script>", [])
+
+        svc = await _unreachable_rag_service()
+        app = _app_for(svc, trace_store=trace_store)
+        async with _async_client(app) as client:
+            resp = await client.get(f"/traces/{trace_id}")
+
+        assert resp.status_code == 200
+        assert "<script>alert(1)</script>" not in resp.text
+        assert "&lt;script&gt;" in resp.text
+    finally:
+        await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
+
+
+async def test_annotate_round_trip_persists_and_reflects_in_detail():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+
+    svc = RagService(
+        store=_FakeRetrievalStore(),
+        embed_client=_FakeEmbedClient(),
+        collection="handbook_chunks",
+        top_k=10,
+        pdf_path="unused.pdf",
+    )
+    provider_clients = {"groq": _FakeProviderClient()}
+    api_keys = {"GROQ_API_KEY": "test-key"}
+    app = _app_for(svc, provider_clients, api_keys, trace_store=trace_store)
+
+    trace_id = None
+    try:
+        async with _async_client(app) as client:
+            trace_id = await _drive_chat_turn(client, "What is the attendance policy?", "groq_llama31_8b")
+
+            annotate_resp = await client.post(
+                f"/traces/{trace_id}/annotate",
+                data={"status": "PASS", "note": "Looks correct.", "tags": "attendance, good"},
+            )
+            assert annotate_resp.status_code == 303
+            assert annotate_resp.headers["location"] == f"/traces/{trace_id}"
+
+            detail_resp = await client.get(f"/traces/{trace_id}")
+
+        row = await pool.fetchrow(
+            "SELECT status, note, tags FROM traces WHERE trace_id = $1", trace_id
+        )
+        assert row["status"] == "PASS"
+        assert row["note"] == "Looks correct."
+        assert list(row["tags"]) == ["attendance", "good"]
+
+        body = detail_resp.text
+        assert "PASS" in body
+        assert "Looks correct." in body
+        assert "attendance" in body
+        assert "good" in body
+    finally:
+        if trace_id:
+            await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
+
+
+async def test_annotate_unknown_trace_id_returns_404():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+    svc = await _unreachable_rag_service()
+    app = _app_for(svc, trace_store=trace_store)
+
+    try:
+        async with _async_client(app) as client:
+            resp = await client.post(
+                "/traces/does-not-exist/annotate",
+                data={"status": "PASS", "note": "", "tags": ""},
+            )
+        assert resp.status_code == 404
+    finally:
+        await pool.close()
+
+
+async def test_annotate_invalid_status_returns_400():
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+
+    svc = RagService(
+        store=_FakeRetrievalStore(),
+        embed_client=_FakeEmbedClient(),
+        collection="handbook_chunks",
+        top_k=10,
+        pdf_path="unused.pdf",
+    )
+    provider_clients = {"groq": _FakeProviderClient()}
+    api_keys = {"GROQ_API_KEY": "test-key"}
+    app = _app_for(svc, provider_clients, api_keys, trace_store=trace_store)
+
+    trace_id = None
+    try:
+        async with _async_client(app) as client:
+            trace_id = await _drive_chat_turn(client, "What is the attendance policy?", "groq_llama31_8b")
+
+            resp = await client.post(
+                f"/traces/{trace_id}/annotate",
+                data={"status": "MAYBE", "note": "", "tags": ""},
+            )
+        assert resp.status_code == 400
+    finally:
+        if trace_id:
+            await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
