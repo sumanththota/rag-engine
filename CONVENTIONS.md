@@ -108,6 +108,17 @@ tokens via SSE).
 - An implementing agent's own "tests pass" is not the acceptance signal.
   A ticket's acceptance criteria are re-checked by an independent run
   after the agent's worktree is done, not taken on the agent's report.
+- Agents never boot the shared dev server on `:8080` — it is one process
+  shared across every parallel worktree. Verify through `pytest` only,
+  spinning up a throwaway test instance on an ephemeral port where a
+  criterion actually needs a live server.
+- A worktree carries tracked files only: `.worktreeinclude` copies `.env`
+  in (gitignored files matching its patterns; tracked files are never
+  duplicated), but `.venv` is never copied — its absolute paths break.
+  Rebuild it in the worktree before running anything:
+  `python -m venv .venv && .venv/bin/pip install -e ".[dev]"` (same as the
+  README's main setup). `pytest -q` should be green on that freshly-built
+  venv before the agent starts its own work.
 
 ## See also
 
