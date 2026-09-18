@@ -16,15 +16,29 @@ Run once, then exit (a fresh context restarts you next tick).
 4. PICK EXACTLY ONE ready DAG step (all depends_on merged; label `ready-for-agent`).
    If none ready, STOP.
 5. ADVANCE ONE STEP based on state:
-   - ready-for-agent  -> open draft PR; create branch impl/<id>-* yourself (subagent
-     worktrees get temporary worktree-* branches and will not land on impl/ on their own);
-     spawn IMPLEMENTER (cheap model, isolation: worktree). Instruct: touch only owned
-     regions; use test-<id>-* fixtures; do NOT boot the shared dev server on :8080 —
-     verify via pytest, spinning up a test instance on an ephemeral port where a
-     criterion needs one; append to .loop/<id>/journal.md; set label agent:gate-pending
-     ONLY with every self-test green.
-   - agent:gate-pending -> spawn VERIFIER (strong model, separate branch verify/<id>-*,
-     Write and Edit disallowed). Run verifier_command. The VERIFIER posts its own raw
+   - ready-for-agent  -> create branch impl/<id>-* yourself (subagent worktrees get
+     temporary worktree-* branches and will not land on impl/ on their own); push it with
+     `git push -u origin impl/<id>-*` (the branch must exist on the remote before a PR can
+     be opened against it); open draft PR early (the verifier posts its verdict there;
+     with no PR the verdict has to travel through a human clipboard and gets paraphrased);
+     spawn IMPLEMENTER (cheap model, isolation: worktree) and CONFIRM `git worktree list`
+     gained an entry — isolation only fires for a dispatched subagent, so a directly-run
+     session silently shares your working directory with every other agent. Instruct:
+     touch only owned regions; use test-<id>-* fixtures; do NOT boot the shared dev
+     server on :8080 — verify via pytest, spinning up a test instance on an ephemeral
+     port where a criterion needs one; stamp a start time in the first journal entry and
+     append one entry per iteration; set label agent:gate-pending ONLY with every
+     self-test green.
+   - agent:gate-pending -> TWO CHECKS FIRST; fail either and label agent:blocked:
+     (a) `git diff --name-only master...impl/<id>-*` — every path must fall inside the
+         owned regions named in LOOP.md. An out-of-region edit is an escalation trigger,
+         not something the implementer may justify in the journal and carry on from.
+         If you approve one, record the approval in the journal — an approved escalation
+         and a skipped one look identical afterwards.
+     (b) fast-forward verify/<id>-* to impl/<id>-* and confirm the diff is EMPTY. A
+         verify branch that lags gates stale code and burns a whole round on a finding
+         that was already fixed.
+     Then spawn VERIFIER (strong model, on verify/<id>-*, Write and Edit disallowed). Run verifier_command. The VERIFIER posts its own raw
      verdict to the PR with gh — you must not relay it, since you only receive its summary
      and relaying would paraphrase the thing that gates the merge.
      PASS -> label agent:verified, mark PR ready. NEEDS_WORK -> label agent:in-progress.
