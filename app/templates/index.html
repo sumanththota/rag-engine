@@ -277,7 +277,7 @@
     }
     .messages.is-receiving { border-color: #93c5fd; box-shadow: 0 0 0 1px #bfdbfe, var(--shadow); }
     #messages:empty::before {
-      content: "Ask a graduate handbook question.\A\A Responses are grounded in retrieved handbook passages.\A Conversations are saved only in this browser.";
+      content: "Ask a graduate handbook question.\A\A Responses are grounded in retrieved handbook passages.\A Conversations are saved on the server for logged-in users.";
       white-space: pre-wrap;
       display: flex;
       align-items: center;
@@ -1083,7 +1083,7 @@
     });
   }
 
-  window.startAnswerStream = function (encodedQuestion, encodedModelID, encodedStartedAtMs, encodedTraceId) {
+  window.startAnswerStream = function (encodedQuestion, encodedModelID, encodedStartedAtMs, encodedTraceId, encodedThreadId) {
     const target = document.getElementById("assistant-last");
     if (!target) return;
 
@@ -1099,7 +1099,12 @@
     try { saveState(state); } catch (e) {}
     renderThreadList();
 
-    const source = new EventSource("/chat/stream?question=" + encodedQuestion + "&model_id=" + encodedModelID + "&started_at_ms=" + encodedStartedAtMs + "&trace_id=" + encodedTraceId);
+    // Build stream URL with optional thread_id parameter
+    let streamUrl = "/chat/stream?question=" + encodedQuestion + "&model_id=" + encodedModelID + "&started_at_ms=" + encodedStartedAtMs + "&trace_id=" + encodedTraceId;
+    if (encodedThreadId !== undefined && encodedThreadId) {
+      streamUrl += "&thread_id=" + encodedThreadId;
+    }
+    const source = new EventSource(streamUrl);
     activeStream = source;
     setActivity("Streaming…");
     setStreamingUi(true);
