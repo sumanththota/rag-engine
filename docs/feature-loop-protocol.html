@@ -462,6 +462,8 @@ acceptance_criteria:       # written BEFORE implementation; each must be able to
      returns the thread"   # never :8080 — that server is shared, see CONVENTIONS §7
   - "User A cannot GET User B's thread (403)"
   - "pytest -q tests/test_threads.py green with test-11-* fixtures"
+  - "the FULL suite is green"   # standing criterion on every feature: verifier_command
+                                # is narrower than the blast radius of any real change
 verifier_command: "pytest -q tests/test_threads.py -k thread"
 escalation_triggers:
   - "schema/migration touches an existing table"
@@ -541,15 +543,27 @@ Run once, then exit (a fresh context restarts you next tick).
 4. PICK EXACTLY ONE ready DAG step (all depends_on merged; label `ready-for-agent`).
    If none ready, STOP.
 5. ADVANCE ONE STEP based on state:
-   - ready-for-agent  -&gt; open draft PR; create branch impl/&lt;id&gt;-* yourself (subagent
-     worktrees get temporary worktree-* branches and will not land on impl/ on their own);
-     spawn IMPLEMENTER (cheap model, isolation: worktree). Instruct: touch only owned
+   - ready-for-agent  -&gt; open draft PR early (the verifier posts its verdict there; with
+     no PR the verdict has to travel through a human clipboard and gets paraphrased);
+     create branch impl/&lt;id&gt;-* yourself (subagent worktrees get temporary worktree-*
+     branches and will not land on impl/ on their own); spawn IMPLEMENTER (cheap model,
+     isolation: worktree) and CONFIRM `git worktree list` gained an entry — isolation
+     only fires for a dispatched subagent, so a directly-run session silently shares
+     your working directory with every other agent. Instruct: touch only owned
      regions; use test-&lt;id&gt;-* fixtures; do NOT boot the shared dev server on :8080 —
      verify via pytest, spinning up a test instance on an ephemeral port where a
-     criterion needs one; append to .loop/&lt;id&gt;/journal.md; set label agent:gate-pending
-     ONLY with every self-test green.
-   - agent:gate-pending -&gt; spawn VERIFIER (strong model, separate branch verify/&lt;id&gt;-*,
-     Write and Edit disallowed). Run verifier_command. The VERIFIER posts its own raw
+     criterion needs one; stamp a start time in the first journal entry and append one
+     entry per iteration; set label agent:gate-pending ONLY with every self-test green.
+   - agent:gate-pending -&gt; TWO CHECKS FIRST; fail either and label agent:blocked:
+     (a) `git diff --name-only master...impl/&lt;id&gt;-*` — every path must fall inside the
+         owned regions named in LOOP.md. An out-of-region edit is an escalation trigger,
+         not something the implementer may justify in the journal and carry on from.
+         If you approve one, record the approval in the journal — an approved escalation
+         and a skipped one look identical afterwards.
+     (b) fast-forward verify/&lt;id&gt;-* to impl/&lt;id&gt;-* and confirm the diff is EMPTY. A
+         verify branch that lags gates stale code and burns a whole round on a finding
+         that was already fixed.
+     Then spawn VERIFIER (strong model, on verify/&lt;id&gt;-*, Write and Edit disallowed). Run verifier_command. The VERIFIER posts its own raw
      verdict to the PR with gh — you must not relay it, since you only receive its summary
      and relaying would paraphrase the thing that gates the merge.
      PASS -&gt; label agent:verified, mark PR ready. NEEDS_WORK -&gt; label agent:in-progress.
@@ -577,13 +591,19 @@ this gate exists to remove. You get the criteria, the diff, and the test runner.
 1. Read .loop/&lt;id&gt;/LOOP.md acceptance_criteria (the contract, written before code).
 2. For EACH criterion, run the real check (verifier_command + the criterion's own steps).
    A criterion passes only with evidence you can point to (unedited test output / exit code).
-3. Any criterion you cannot make FAIL under a wrong implementation is not a real check —
+3. Run verifier_command at least 3 times back to back with nothing else changed. A test
+   that passes 6 times and fails twice is not a passing test — it is a nondeterministic
+   one, and shipping it means a suite that reddens at random against correct code.
+   Nondeterminism is a NEEDS_WORK finding; say which run failed and why.
+4. If any criterion says "no regression" or otherwise reaches beyond verifier_command's
+   scope, run the FULL suite. A scoped command cannot evidence an unscoped claim.
+5. Any criterion you cannot make FAIL under a wrong implementation is not a real check —
    flag it as untestable rather than passing it.
-4. Begin your reply with exactly PASS or NEEDS_WORK on its own line.
+6. Begin your reply with exactly PASS or NEEDS_WORK on its own line.
    On NEEDS_WORK, list the failing criterion + the raw output; that becomes the
    implementer's next prompt.
-5. Do not paraphrase failures into "mostly passing." The raw verdict gates the merge.
-6. Post the verdict to the PR yourself: `gh pr comment &lt;n&gt; --body-file -`. Do not hand it
+7. Do not paraphrase failures into "mostly passing." The raw verdict gates the merge.
+8. Post the verdict to the PR yourself: `gh pr comment &lt;n&gt; --body-file -`. Do not hand it
    back for someone else to relay — your caller receives only a summary of you, and a
    summarised verdict is a paraphrased one.</pre>
   </div>
@@ -751,47 +771,46 @@ this gate exists to remove. You get the criteria, the diff, and the test runner.
 
 <!-- ============ 8. DAG ============ -->
 <section id="dag">
-  <h2>#9 → #10 ∥ #11 → #12</h2>
-  <p class="sub">One blocking feature, one safe parallel pair, one dependent finish.</p>
+  <h2>#9 → {#10, #11}, and #11 → #12</h2>
+  <p class="sub">One blocking feature, one safe parallel pair, and a finish that waits on #11 alone. #10 blocks nothing.</p>
 
   <div class="diagram">
     <div class="svgwrap">
-      <svg viewBox="0 0 800 208" role="img" aria-label="Dependency graph: issue 9 blocks issues 10 and 11 which run in parallel, both block issue 12">
+      <svg viewBox="0 0 800 208" role="img" aria-label="Dependency graph: issue 9 blocks issues 10 and 11; issue 11 blocks issue 12; issue 10 blocks nothing">
         <g style="color:var(--rule-2)">
-          <path class="edge" d="M196 92 Q243 92 243 50 H286" marker-end="url(#ah2)"/>
-          <path class="edge" d="M196 92 Q243 92 243 148 H286" marker-end="url(#ah2)"/>
-          <path class="edge" d="M500 50 Q547 50 547 92 H592" marker-end="url(#ah2)"/>
-          <path class="edge" d="M500 148 Q547 148 547 92 H592" marker-end="url(#ah2)"/>
+          <path class="edge" d="M196 96 Q243 96 243 46 H282" marker-end="url(#ah2)"/>
+          <path class="edge" d="M196 96 Q243 96 243 150 H282" marker-end="url(#ah2)"/>
+          <path class="edge" d="M492 150 H562" marker-end="url(#ah2)"/>
         </g>
         <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs>
 
         <g class="node" style="color:var(--ink-2);cursor:default">
-          <rect class="body" x="26" y="64" width="170" height="56" rx="6" stroke="var(--ink-2)"/>
-          <text class="t" x="42" y="88">#9 password auth</text>
-          <text class="s" x="42" y="105">blocking — run alone, first</text>
+          <rect class="body" x="26" y="68" width="170" height="56" rx="6" stroke="var(--ink-2)"/>
+          <text class="t" x="42" y="92">#9 password auth</text>
+          <text class="s" x="42" y="109">blocking — run alone, first</text>
         </g>
         <g class="node" style="color:var(--progress);cursor:default">
-          <rect class="body" x="286" y="22" width="214" height="56" rx="6" stroke="var(--progress)"/>
-          <text class="t" x="302" y="46">#10</text>
-          <text class="s" x="302" y="63">parallel worktree · test-10-* fixtures</text>
+          <rect class="body" x="282" y="18" width="210" height="56" rx="6" stroke="var(--progress)"/>
+          <text class="t" x="298" y="42">#10</text>
+          <text class="s" x="298" y="59">leaf · blocks nothing · deferrable</text>
         </g>
         <g class="node" style="color:var(--progress);cursor:default">
-          <rect class="body" x="286" y="120" width="214" height="56" rx="6" stroke="var(--progress)"/>
-          <text class="t" x="302" y="144">#11 persist threads</text>
-          <text class="s" x="302" y="161">parallel worktree · test-11-* fixtures</text>
+          <rect class="body" x="282" y="122" width="210" height="56" rx="6" stroke="var(--progress)"/>
+          <text class="t" x="298" y="146">#11 persist threads</text>
+          <text class="s" x="298" y="163">critical path · test-11-* fixtures</text>
         </g>
         <g class="node" style="color:var(--ink-2);cursor:default">
-          <rect class="body" x="592" y="64" width="182" height="56" rx="6" stroke="var(--ink-2)"/>
-          <text class="t" x="608" y="88">#12 sync on login</text>
-          <text class="s" x="608" y="105">waits for both</text>
+          <rect class="body" x="562" y="122" width="200" height="56" rx="6" stroke="var(--ink-2)"/>
+          <text class="t" x="578" y="146">#12 sync on login</text>
+          <text class="s" x="578" y="163">waits on #11 only</text>
         </g>
       </svg>
     </div>
   </div>
 
   <div class="callout">
-    <p><b>The three rules that make the parallel pair safe.</b> Ticket-tagged fixtures, so #10 and #11 never touch each other's rows in the shared Postgres. Per-agent owned regions in <code>main.py</code>, so the hotspot file has no overlapping writers. And neither agent boots the dev server — port 8080 is shared, so verification goes through pytest only.</p>
-    <p>Concurrency stays capped at two agents until there is real per-agent database isolation.</p>
+    <p><b>The critical path is #9 → #11 → #12.</b> #10 is a leaf: nothing waits on it, so it is the one piece of work you can postpone without stalling anything. If you would rather not point two agents at the shared Postgres on the first lap, run it last instead of alongside #11 — the parallel pair is an option here, not a requirement.</p>
+    <p><b>The three rules that make that pair safe, if you do run it.</b> Ticket-tagged fixtures, so #10 and #11 never touch each other's rows. Per-agent owned regions in <code>main.py</code>, so the hotspot file has no overlapping writers. And neither agent boots the dev server — port 8080 is shared, so verification goes through pytest only. Concurrency stays capped at two until there is real per-agent database isolation.</p>
   </div>
 </section>
 
@@ -817,7 +836,7 @@ this gate exists to remove. You get the criteria, the diff, and the test runner.
       <li><input type="checkbox" id="k6"><label class="txt" for="k6"><b>Add <code>.loop/</code></b> with <code>INDEX.md</code> and a <code>LOOP.md</code> per active ticket. Put the loop-testing rule in CONVENTIONS.md §7.</label></li>
       <li><input type="checkbox" id="k7"><label class="txt" for="k7"><b>Draft the two prompts</b> and run the gate by hand for now — pytest, then post the unedited result on the PR. There's no CI yet.</label></li>
       <li><input type="checkbox" id="k8"><label class="txt" for="k8"><b>Set the budget caps and wire the escalation triggers.</b> These are exactly the blockers already on your signal board.</label></li>
-      <li><input type="checkbox" id="k9"><label class="txt" for="k9"><b>Run #9 first</b>, then #10 and #11 in parallel worktrees with tagged fixtures and owned regions, then #12.</label></li>
+      <li><input type="checkbox" id="k9"><label class="txt" for="k9"><b>Run #9 first</b>, then #11 on the critical path, then #12. #10 blocks nothing — run it alongside #11 in a parallel worktree if the database behaves, or leave it for last.</label></li>
     </ul>
   </div>
 
@@ -937,6 +956,18 @@ Then STOP and show me: the tree you created, and the rubric scores.</pre>
       <div class="pick">The verifier must not read <code>journal.md</code></div>
       <p>The journal is the implementer's account of what it built and why it believes it works. Handing that to the verifier smuggles self-report back through the side door — the exact thing L3 exists to remove. The verifier gets acceptance criteria, the diff, and the test runner.</p>
       <div class="flip">If a verdict ever cites <b>reasoning the implementer wrote</b>, the gate has already leaked.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--blocked)">
+      <h4>Found on the first live feature</h4>
+      <div class="pick">Two agents, one working directory</div>
+      <p><code>isolation: worktree</code> sits in the implementer's frontmatter and fires only when a subagent is <em>dispatched</em>. Run the implementer and verifier as ordinary sessions and they quietly take turns checking out branches in the same directory — the verifier can pick up the implementer's uncommitted files, and two parallel agents will clobber each other outright.</p>
+      <div class="flip">After spawning, confirm <code>git worktree list</code> <b>gained an entry</b>. If it didn't, the agents are sharing a desk.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--blocked)">
+      <h4>Found on the first live feature</h4>
+      <div class="pick">The verify branch silently lags</div>
+      <p>Nothing advances <code>verify/&lt;id&gt;-*</code> when the implementer commits a fix. A verifier pointed at it gates code from two commits ago, correctly re-reports a defect that was already fixed, and burns a whole round. The design states that the two branches match; it never says who makes that true.</p>
+      <div class="flip">Fast-forward and <b>confirm an empty diff</b> before spawning the verifier — same check that catches a verifier which edited something, run at the other end.</div>
     </div>
     <div class="dcard" style="border-left-color:var(--ink-3)">
       <h4>Scope discipline</h4>
