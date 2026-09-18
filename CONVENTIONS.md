@@ -96,6 +96,19 @@ tokens via SSE).
   refactored incidentally — treat exact wording/whitespace as load-bearing,
   not style to normalize.
 
+## 7. Agent-loop testing
+
+- When tickets are implemented in parallel (separate git worktrees against
+  the one shared dev Postgres — see `tests/test_traces.py`'s rationale for
+  hitting a real DB), any new hardcoded test literal (email, id) is
+  prefixed with the issue number: `test-9-...`, `test-10-...`. Same
+  convention as the existing tests, just namespaced, so two parallel
+  suites never collide on a shared table's unique constraint (e.g.
+  `users.email`).
+- An implementing agent's own "tests pass" is not the acceptance signal.
+  A ticket's acceptance criteria are re-checked by an independent run
+  after the agent's worktree is done, not taken on the agent's report.
+
 ## See also
 
 - [CONTEXT.md](CONTEXT.md) — domain glossary (Trace, Step, Annotation).
