@@ -77,3 +77,26 @@ merges, to pick up the fix rather than duplicating it or continuing to work arou
 with `PYTHONPATH=.`.
 
 A corresponding note is being promoted to CONVENTIONS.md §7 directly on master.
+
+## Verify round 1 — NEEDS_WORK — 2026-09-18T08:05:00Z
+
+Verifier ran independently on `verify/11-persist-threads` (opus, no write access) and
+posted its raw verdict to PR #15:
+https://github.com/sumanththota/rag-engine/pull/15#issuecomment-5727095677
+
+Tests are green/deterministic (unit-level, 3x runs) and scope is clean, but the suite
+never exercises the app through HTTP, and doing so exposes real gaps:
+- No list/detail/delete HTTP routes exist at all (criteria 3/4/5 unverifiable/failing).
+- `chat_start` calls `create_thread()` unconditionally on every turn — two consecutive
+  logged-in turns land in two different threads, so criterion 1 ("refresh shows the
+  same conversation") fails end-to-end even though the per-message write (criterion 2)
+  is correct in isolation.
+- `deleteThread()` in the template still only touches localStorage, no server call.
+- Tests 3-6 depend on test 2's cleanup and fail if run in isolation (same class of
+  issue as ticket #9's retro: `AuthError: email already registered`).
+
+Label flipped back to agent:in-progress. Verify round: 1 of 3 (max_verify_rounds).
+Next implementer pass needs to: wire thread_id continuity across turns within one
+chat_start "session" instead of minting a new thread per turn, add the missing
+list/detail/delete HTTP routes, wire the delete UI to call it, and give tests 3-6
+their own isolated setup rather than relying on test-order side effects.
