@@ -119,6 +119,11 @@ tokens via SSE).
   `python -m venv .venv && .venv/bin/pip install -e ".[dev]"` (same as the
   README's main setup). `pytest -q` should be green on that freshly-built
   venv before the agent starts its own work.
+- `pyproject.toml` now has a `[build-system]` table and `[tool.setuptools]`
+  packages config (added during ticket #11, approved by a human — see
+  `.loop/11/journal.md`). The `PYTHONPATH=.` workaround noted in earlier
+  tickets' retros is no longer required going forward; existing tests that
+  still set it are unaffected by the change.
 
 ## See also
 
