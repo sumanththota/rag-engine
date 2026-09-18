@@ -20,7 +20,7 @@ escalation_triggers:
   - "any edit outside app/auth.py, app/config.py, or the agent's own main.py region"
 budgets: { max_iterations: 8, max_verify_rounds: 3, max_tokens: 400000, wall_clock: "2h" }
 model_routing: { implementer: "haiku", verifier: "opus", planner: "opus" }
-state: "ready-for-agent"   # mirrors the GitHub label; no depends_on, so this is real
+state: "agent:gate-pending"   # mirrors the GitHub label; every acceptance criterion is green (see .loop/9/journal.md)
 branches: { impl: "impl/9-password-auth", verify: "verify/9-password-auth" }
 ---
 ## Context (progressive disclosure — links, not inlined bodies)
