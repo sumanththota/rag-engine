@@ -63,3 +63,17 @@ formally promoting it to CONVENTIONS.md so it stops recurring across tickets), o
 originally instructed. The rest of the diff (app/threads.py, app/main.py's thread_id
 wiring, app/templates/index.html, tests/test_threads.py) was not otherwise reviewed
 line-by-line — that review is the verifier's job once this is unblocked.
+
+## Human decision — 2026-09-18T07:55:00Z
+
+APPROVED by the user (not an orchestrator self-approval). Reasoning given: this is the
+`[build-system]` fix flagged in ticket #9's retro, closes a packaging gap the verifier
+documented twice there, adds no new dependencies, and the diff is nothing beyond that
+fix. Escalation resolved — proceeding toward agent:gate-pending.
+
+Follow-up noted for merge time: since pyproject.toml is shared root config, any other
+in-progress ticket worktree (#10, #12) should rebase or restart onto master after #11
+merges, to pick up the fix rather than duplicating it or continuing to work around it
+with `PYTHONPATH=.`.
+
+A corresponding note is being promoted to CONVENTIONS.md §7 directly on master.
