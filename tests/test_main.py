@@ -23,6 +23,7 @@ import base64
 import json
 import logging
 import re
+import uuid
 
 import asyncpg
 from fastapi import FastAPI
@@ -744,7 +745,24 @@ async def test_traces_list_shows_recent_trace():
 
 
 async def test_traces_list_empty_state():
-    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    # The shared dev Postgres carries real eval traces (see docs/evals/), so this
+    # can't assert on an empty `public.traces` table. Give TraceStore its own
+    # throwaway schema instead — genuine isolation, not a table truncate that
+    # would risk eval data.
+    schema = f"test_empty_{uuid.uuid4().hex[:8]}"
+    admin_conn = await asyncpg.connect(dsn=_TRACES_DSN)
+    try:
+        await admin_conn.execute(f'CREATE SCHEMA "{schema}"')
+    finally:
+        await admin_conn.close()
+
+    # `server_settings` (a connection startup parameter), not an `init`
+    # callback with a runtime SET — asyncpg's pool issues RESET ALL when a
+    # connection is released back to the pool, which would silently undo a
+    # session-level SET search_path on the next acquire.
+    pool = await asyncpg.create_pool(
+        dsn=_TRACES_DSN, min_size=0, max_size=2, server_settings={"search_path": schema}
+    )
     trace_store = TraceStore(pool)
     await trace_store.ensure_schema()
     svc = await _unreachable_rag_service()
@@ -758,6 +776,11 @@ async def test_traces_list_empty_state():
         assert "no traces" in list_resp.text.lower()
     finally:
         await pool.close()
+        admin_conn = await asyncpg.connect(dsn=_TRACES_DSN)
+        try:
+            await admin_conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
+        finally:
+            await admin_conn.close()
 
 
 async def test_trace_detail_renders_steps_and_not_configured_rewrite_marker():
