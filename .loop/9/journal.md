@@ -117,3 +117,24 @@ Nothing red. Per the user's direct instruction I am not setting
 `agent:gate-pending`, not labeling `agent:verified`, and not opening or
 merging anything — that verification step is being driven by hand. Flagging
 the `tests/test_config.py` side effect above for whoever reviews next.
+
+## 2026-09-18T05:34:31Z — verify round 1: NEEDS_WORK fix
+
+Verifier round 1 returned NEEDS_WORK: full-suite run (not just
+verifier_command) surfaced a regression in a pre-existing, unmodified test —
+`tests/test_config.py::test_load_config_propagates_llamaparse_vars_into_os_environ`
+started failing because `SECRET_KEY` became a required Settings field
+(criterion 6) but that test's .env fixture never set it.
+
+Fix: added `SECRET_KEY=test-9-boot-secret` to that test's .env fixture and
+delenv/pop it the same way `tests/test_auth.py`'s own SECRET_KEY tests do.
+No change to the SECRET_KEY requirement itself.
+
+Approvals recorded (given explicitly by the user in chat, not self-granted):
+- Out-of-region edit to `tests/test_config.py` (outside app/auth.py,
+  app/config.py, and main.py's auth region) — approved to fix the regression
+  above.
+- `pyproject.toml` dependency additions (argon2-cffi, itsdangerous) from the
+  original round — approved.
+
+Full suite green after fix: `PYTHONPATH=. uv run pytest -q` → 106 passed.

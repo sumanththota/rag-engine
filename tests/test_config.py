@@ -62,13 +62,21 @@ def test_load_config_propagates_llamaparse_vars_into_os_environ(tmp_path, monkey
     env_file.write_text(
         "HANDBOOK_PATH=/tmp/h.pdf\n"
         "DATABASE_URL=postgresql://u:p@localhost/db\n"
+        "SECRET_KEY=test-9-boot-secret\n"
         "LLAMA_CLOUD_API_KEY=llx-real\n"
     )
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("LLAMA_CLOUD_API_KEY", raising=False)
     monkeypatch.delenv("HANDBOOK_PATH", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("SECRET_KEY", raising=False)
 
-    load_config()
-
-    assert os.environ["LLAMA_CLOUD_API_KEY"] == "llx-real"
+    try:
+        load_config()
+        assert os.environ["LLAMA_CLOUD_API_KEY"] == "llx-real"
+    finally:
+        # load_config() -> _load_dotenv_into_environ() sets SECRET_KEY into the
+        # real os.environ via setdefault(); monkeypatch.delenv can't undo that
+        # (see tests/test_auth.py::test_load_config_succeeds_when_secret_key_present
+        # for why), so pop it directly to keep it from leaking into later tests.
+        os.environ.pop("SECRET_KEY", None)
