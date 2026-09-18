@@ -1,0 +1,119 @@
+# Ticket 9 journal — password auth (impl/9-password-auth)
+
+## Iteration 1 — 2026-09-18
+
+### What I did
+- `app/config.py`: added `Settings.app_env` (`APP_ENV`, default `"production"`)
+  and `Settings.secret_key` (`SECRET_KEY`, required, validated non-empty).
+  Missing `SECRET_KEY` now raises `ConfigError` via `load_config()`, same
+  path as `HANDBOOK_PATH`/`DATABASE_URL`.
+- New module `app/auth.py` (own `AuthError`, own `ensure_schema()`, same
+  shape as `PostgresStore`/`TraceStore`):
+  - `AuthStore` — Postgres-backed `users` + `auth_identities` tables (split
+    per ADR-0003), `create_user_with_password`, `authenticate_password`,
+    `get_user`.
+  - `hash_password`/`verify_password` — argon2id via `argon2-cffi`
+    (`PasswordHasher(type=argon2.Type.ID)`).
+  - `sign_session_cookie`/`verify_session_cookie` — itsdangerous
+    `URLSafeTimedSerializer`, sliding 30-day idle expiry
+    (`_SESSION_MAX_AGE_SECONDS`). `verify_session_cookie` never raises:
+    `BadSignature`/expiry both resolve to `None`.
+  - `set_session_cookie`/`clear_session_cookie` — HttpOnly, SameSite=Lax,
+    Secure unless `APP_ENV=development`.
+  - `make_get_current_user_optional(auth_store, secret_key)` — builds the
+    `Depends(...)` dependency; missing cookie, invalid/expired cookie, or a
+    DB failure on `get_user()` (`AuthError`) all resolve to `None`, never
+    raise.
+- `app/main.py` (own region, new `# ---- auth (ticket 9) ----` block,
+  mirroring the existing `# ---- traces review (ticket 4) ----` pattern):
+  - `create_app()` gained `auth_store: AuthStore | None = None`. Routes
+    (`POST /signup`, `POST /login`, `POST /logout`, `GET /me`) are mounted
+    **only** when both `auth_store` and `settings` are supplied — so every
+    existing `create_app()` call site (tests/test_main.py, unmodified)
+    keeps working exactly as before, unaware auth exists. This is the
+    concrete mechanism behind "anonymous chat unaffected."
+  - `bootstrap()` now also builds an `AuthStore`, calls `ensure_schema()`
+    (warn-and-continue on failure, same non-critical stance as
+    `trace_store.ensure_schema()` — ADR-0003's "additive not gating"), and
+    passes it into `create_app()`.
+- `pyproject.toml`: added `argon2-cffi>=23.1`, `itsdangerous>=2.2` (installed
+  into `.venv` directly with `pip install`, since a plain `pip install -e
+  ".[dev]"` currently fails in this checkout — pre-existing setuptools
+  multi-package-discovery error from `logs/`/`observability/` dirs at repo
+  root, unrelated to this ticket, not touched).
+- New `tests/test_auth.py` (21 tests, all fixtures/emails prefixed
+  `test-9-...` per CONVENTIONS.md §7), hitting the real dev Postgres at
+  `localhost:5433` for `AuthStore`/HTTP-level tests, no server booted on
+  `:8080`:
+  - `AuthStore`: signup writes both rows with an argon2id hash
+    (`$argon2id$` prefix asserted, raw password asserted absent), duplicate
+    email raises `AuthError`, login round-trip (right/wrong password,
+    unknown email).
+  - Session cookie: sign/verify round-trip, tampered value rejected,
+    garbage rejected, expired rejected (via `monkeypatch.setattr` shrinking
+    `_SESSION_MAX_AGE_SECONDS` to `-1` — deterministic, no real 30-day
+    wait), cookie attributes match the Context spec (HttpOnly/SameSite=Lax/
+    Secure-unless-dev/Max-Age).
+  - `get_current_user_optional`: None for missing/invalid cookie, and
+    (real, unreachable-pool) DB failure — confirms it never raises.
+  - HTTP: `/signup` 201 then 409 on duplicate; `/login` 401 on wrong
+    password (no cookie set) then 200 with cookie; `/logout` clears it
+    (`/me` flips back to `null`); `/me` returns `null` for a tampered
+    cookie without 500ing; login cookie carries `Secure` when
+    `APP_ENV=production`.
+  - Regression: `/health/live` and `/chat/start` behave identically with
+    auth wired in; `create_app()` called the old way (no `auth_store`) 404s
+    on `/signup` instead of mounting it or erroring.
+  - Config: missing `SECRET_KEY` -> `ConfigError`; present -> `Settings`
+    populated, `app_env` defaults to `"production"`.
+
+### Evidence
+`pytest -q tests/test_auth.py` (the verifier_command):
+```
+collected 21 items
+tests/test_auth.py .....................                                 [100%]
+21 passed in 1.42s
+```
+Full suite `pytest -q`: `1 failed, 105 passed` — see "Known side effect"
+below for the one failure; it is pre-existing test surface outside this
+ticket's owned regions, not new feature-code drift.
+`pytest -q tests/test_main.py` (existing, unmodified — regression proof
+for criterion 5): `28 passed`.
+No leftover `test-9-*` rows in the dev DB after the run (checked directly
+against Postgres after the suite finished).
+
+### Known side effect (flagged, not fixed — outside owned regions)
+`tests/test_config.py::test_load_config_propagates_llamaparse_vars_into_os_environ`
+now fails: it writes `HANDBOOK_PATH`/`DATABASE_URL` (not `SECRET_KEY`) into
+a temp `.env` and calls `load_config()`, which now requires `SECRET_KEY` —
+a direct, unavoidable consequence of criterion 6 ("missing SECRET_KEY
+raises ConfigError at boot, same as HANDBOOK_PATH/DATABASE_URL today").
+`tests/test_config.py` is not app/auth.py, app/config.py, or main.py, so
+per "touch only owned regions" I have not edited it — leaving it for the
+orchestrator/human to decide (one-line fix: add `SECRET_KEY=...` to that
+test's temp `.env`). Confirmed this is a genuine, order-independent
+failure, not a red herring — earlier I saw it accidentally pass in a
+full-suite run because an env var my own test set via
+`os.environ.setdefault` (inside `load_config()`) leaked into the process
+and was never actually cleaned up (a `monkeypatch.delenv` on a var
+monkeypatch never saw set restores it, it doesn't remove it) I fixed that
+leak in my own test (now uses `os.environ.pop` directly in a `finally`),
+so this failure is now real, deterministic, and reproducible in isolation
+(`pytest -q tests/test_config.py` alone) and in the full suite either way.
+
+### Acceptance criteria status
+1. POST /signup creates users + auth_identities rows (argon2id) — GREEN
+2. POST /login verifies password, sets signed session cookie — GREEN
+3. POST /logout clears the cookie — GREEN
+4. Depends(get_current_user_optional) never raises, None for anon/invalid/expired — GREEN
+5. Existing anonymous chat flow unaffected — GREEN (test_main.py unmodified, still 28/28; auth routes only mount when explicitly wired)
+6. APP_ENV/SECRET_KEY in Settings; missing SECRET_KEY -> ConfigError at boot — GREEN
+
+All six acceptance criteria green. Every check under
+`verifier_command` (`pytest -q tests/test_auth.py`) passes: 21/21.
+
+### What's next
+Nothing red. Per the user's direct instruction I am not setting
+`agent:gate-pending`, not labeling `agent:verified`, and not opening or
+merging anything — that verification step is being driven by hand. Flagging
+the `tests/test_config.py` side effect above for whoever reviews next.

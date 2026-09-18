@@ -52,6 +52,16 @@ class Settings(BaseSettings):
 
     database_url: str = Field(alias="DATABASE_URL")
 
+    app_env: str = Field(default="production", alias="APP_ENV")
+    secret_key: str = Field(alias="SECRET_KEY")
+
+    @field_validator("secret_key")
+    @classmethod
+    def _require_secret_key(cls, v: str) -> str:
+        if not v:
+            raise ValueError("SECRET_KEY is required")
+        return v
+
     @field_validator("ollama_api_key")
     @classmethod
     def _trim_ollama_api_key(cls, v: str) -> str:

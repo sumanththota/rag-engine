@@ -26,10 +26,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from starlette.background import BackgroundTasks
 
+from app.auth import (
+    AuthError,
+    AuthStore,
+    LoginRequest,
+    SignupRequest,
+    User,
+    clear_session_cookie,
+    make_get_current_user_optional,
+    set_session_cookie,
+)
 from app.config import Settings, load_config
 from app.embed import OllamaClient
 from app.llm import OpenAICompatibleClient
@@ -371,6 +381,7 @@ def create_app(
     store: PostgresStore,
     trace_store: TraceStore,
     settings: Settings | None = None,
+    auth_store: AuthStore | None = None,
     experiments_path: str = _DEFAULT_EXPERIMENTS_PATH,
     docs_dir: str = _DEFAULT_DOCS_DIR,
 ) -> FastAPI:
@@ -860,6 +871,50 @@ def create_app(
         finally:
             trace_id_var.reset(token)
 
+    # ---- auth (ticket 9) -------------------------------------------------
+    # Additive, not gating (ADR-0003): mounted only when both auth_store and
+    # settings (for SECRET_KEY/APP_ENV) are supplied, so create_app() calls
+    # that omit them — like the existing chat/traces tests — keep working
+    # exactly as before, unaware auth exists.
+    if auth_store is not None and settings is not None:
+        get_current_user_optional = make_get_current_user_optional(auth_store, settings.secret_key)
+        secure_cookie = settings.app_env != "development"
+
+        @app.post("/signup")
+        async def signup(body: SignupRequest) -> JSONResponse:
+            try:
+                user = await auth_store.create_user_with_password(body.email, body.password)
+            except AuthError as err:
+                logger.info("signup failed err=%s", err, extra={"stage": "http"})
+                return JSONResponse({"error": "email already registered"}, status_code=409)
+            return JSONResponse({"id": user.id, "email": user.email}, status_code=201)
+
+        @app.post("/login")
+        async def login(body: LoginRequest) -> JSONResponse:
+            try:
+                user = await auth_store.authenticate_password(body.email, body.password)
+            except AuthError as err:
+                logger.warning("login failed err=%s", err, extra={"stage": "http"})
+                return JSONResponse({"error": "invalid email or password"}, status_code=401)
+            if user is None:
+                return JSONResponse({"error": "invalid email or password"}, status_code=401)
+
+            response = JSONResponse({"id": user.id, "email": user.email})
+            set_session_cookie(response, settings.secret_key, user.id, secure=secure_cookie)
+            return response
+
+        @app.post("/logout")
+        async def logout() -> JSONResponse:
+            response = JSONResponse({"status": "ok"})
+            clear_session_cookie(response)
+            return response
+
+        @app.get("/me")
+        async def me(user: User | None = Depends(get_current_user_optional)) -> JSONResponse:
+            if user is None:
+                return JSONResponse({"user": None})
+            return JSONResponse({"user": {"id": user.id, "email": user.email}})
+
     return app
 
 
@@ -904,6 +959,14 @@ async def bootstrap() -> FastAPI:
         # a traces-table setup failure must not take down the chat product
         # itself, matching write_trace()'s own TraceError handling below.
         logger.warning("[boot] traces schema setup failed: %s", err, extra={"stage": "boot"})
+
+    auth_store = AuthStore(pool)
+    try:
+        await auth_store.ensure_schema()
+    except AuthError as err:
+        # Same additive-not-gating stance as traces above (ADR-0003): auth
+        # schema setup failing must not take down anonymous chat.
+        logger.warning("[boot] auth schema setup failed: %s", err, extra={"stage": "boot"})
     rag_service = RagService(
         store=store,
         embed_client=embed_client,
@@ -941,6 +1004,7 @@ async def bootstrap() -> FastAPI:
         store=store,
         trace_store=trace_store,
         settings=settings,
+        auth_store=auth_store,
     )
 
 
