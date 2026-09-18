@@ -1,0 +1,1248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Feature Loop Protocol — operating manual</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#EDEFE9;
+  --panel:#FFFFFF;
+  --panel-2:#F5F7F1;
+  --ink:#16222A;
+  --ink-2:#4E5D65;
+  --ink-3:#7C8A8F;
+  --rule:#D3D8CE;
+  --rule-2:#B7BFB3;
+  --ready:#8F6412;
+  --progress:#1E5C9C;
+  --gate:#68429F;
+  --verified:#1B6B4B;
+  --blocked:#A6382C;
+  --shadow:0 1px 0 rgba(22,34,42,.06);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#111A20;
+    --panel:#18232A;
+    --panel-2:#1D2A32;
+    --ink:#E4EAE6;
+    --ink-2:#A6B4B8;
+    --ink-3:#7F8E93;
+    --rule:#2A3841;
+    --rule-2:#3A4B55;
+    --ready:#DFA646;
+    --progress:#74A9E2;
+    --gate:#B48BE8;
+    --verified:#55BC8C;
+    --blocked:#E87C6C;
+    --shadow:none;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#111A20; --panel:#18232A; --panel-2:#1D2A32;
+  --ink:#E4EAE6; --ink-2:#A6B4B8; --ink-3:#7F8E93;
+  --rule:#2A3841; --rule-2:#3A4B55;
+  --ready:#DFA646; --progress:#74A9E2; --gate:#B48BE8; --verified:#55BC8C; --blocked:#E87C6C;
+  --shadow:none;
+}
+
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important;animation:none!important}}
+body{
+  margin:0;background:var(--paper);color:var(--ink);
+  font-family:"Source Serif 4",Georgia,serif;font-size:17px;line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3,h4,.ui,button,input,select,table,.chip,nav,.mono,code,pre{font-family:"Archivo",system-ui,sans-serif}
+code,pre,.mono{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace}
+
+.layout{max-width:1200px;margin:0 auto;padding:0 20px;display:grid;grid-template-columns:1fr;gap:0}
+@media(min-width:1040px){
+  .layout{grid-template-columns:212px minmax(0,1fr);gap:48px;padding:0 32px}
+}
+
+/* ---------- nav ---------- */
+nav{position:sticky;top:0;z-index:20;background:var(--paper);border-bottom:1px solid var(--rule)}
+nav ol{display:flex;gap:6px;list-style:none;margin:0;padding:10px 0;overflow-x:auto;scrollbar-width:thin}
+nav a{
+  display:block;white-space:nowrap;text-decoration:none;color:var(--ink-2);
+  font-size:13px;font-weight:500;padding:5px 10px;border-radius:999px;border:1px solid transparent;
+}
+nav a:hover{color:var(--ink);background:var(--panel)}
+nav a.on{color:var(--ink);background:var(--panel);border-color:var(--rule-2)}
+@media(min-width:1040px){
+  nav{position:sticky;top:0;height:100vh;border-bottom:none;border-right:1px solid var(--rule);background:transparent;padding-top:56px}
+  nav ol{flex-direction:column;gap:1px;overflow:visible;padding:0}
+  nav a{border-radius:4px;padding:6px 10px 6px 12px;border-left:2px solid transparent;border:none;border-left:2px solid transparent}
+  nav a.on{background:transparent;border-left-color:var(--progress);color:var(--ink);font-weight:600}
+  nav .navtitle{font-size:11px;color:var(--ink-3);padding:0 12px 10px;letter-spacing:.02em}
+}
+@media(max-width:1039px){.navtitle{display:none}}
+
+/* ---------- masthead ---------- */
+header.mast{padding:52px 0 40px;border-bottom:1px solid var(--rule)}
+.kicker{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--ink-3);margin:0 0 14px}
+h1{font-size:clamp(34px,5.4vw,54px);line-height:1.02;letter-spacing:-.022em;font-weight:700;margin:0 0 18px;max-width:16ch}
+.lede{font-size:19px;color:var(--ink-2);max-width:62ch;margin:0 0 26px}
+.facts{display:flex;flex-wrap:wrap;gap:8px}
+.fact{background:var(--panel);border:1px solid var(--rule);border-radius:5px;padding:8px 12px;font-size:12.5px;font-family:"Archivo",sans-serif;color:var(--ink-2)}
+.fact b{color:var(--ink);font-weight:600}
+
+section{padding:52px 0;border-top:1px solid var(--rule)}
+section:first-of-type{border-top:none}
+h2{font-size:27px;letter-spacing:-.015em;font-weight:700;margin:0 0 6px}
+h2 .num{color:var(--ink-3);font-weight:500;font-size:16px;margin-right:10px;font-family:"IBM Plex Mono",monospace}
+.sub{color:var(--ink-3);font-size:15px;margin:0 0 26px;max-width:66ch;font-family:"Archivo",sans-serif}
+h3{font-size:18px;font-weight:600;margin:34px 0 10px;letter-spacing:-.01em}
+h4{font-size:14px;font-weight:600;margin:0 0 6px}
+p{max-width:70ch;margin:0 0 14px}
+a{color:var(--progress)}
+:focus-visible{outline:2px solid var(--progress);outline-offset:2px;border-radius:3px}
+
+.panel{background:var(--panel);border:1px solid var(--rule);border-radius:8px;box-shadow:var(--shadow)}
+.pad{padding:20px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.grid2{display:grid;gap:16px;grid-template-columns:1fr}
+@media(min-width:760px){.grid2{grid-template-columns:1fr 1fr}}
+.grid3{display:grid;gap:14px;grid-template-columns:1fr}
+@media(min-width:700px){.grid3{grid-template-columns:repeat(3,1fr)}}
+
+/* ---------- state chips ---------- */
+.chip{display:inline-flex;align-items:center;gap:6px;font-family:"IBM Plex Mono",monospace;font-size:12px;
+  padding:3px 8px;border-radius:4px;border:1px solid;white-space:nowrap}
+.c-ready{color:var(--ready);border-color:var(--ready);background:color-mix(in srgb,var(--ready) 10%,transparent)}
+.c-prog{color:var(--progress);border-color:var(--progress);background:color-mix(in srgb,var(--progress) 10%,transparent)}
+.c-gate{color:var(--gate);border-color:var(--gate);background:color-mix(in srgb,var(--gate) 10%,transparent)}
+.c-ver{color:var(--verified);border-color:var(--verified);background:color-mix(in srgb,var(--verified) 10%,transparent)}
+.c-blk{color:var(--blocked);border-color:var(--blocked);background:color-mix(in srgb,var(--blocked) 10%,transparent)}
+
+/* ---------- state machine svg ---------- */
+.diagram{background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:18px 14px}
+.diagram svg{display:block}
+.svgwrap{overflow-x:auto}
+.svgwrap svg{min-width:720px;width:100%;height:auto}
+.node rect.body{fill:var(--panel-2);stroke:var(--rule-2);stroke-width:1}
+.node text.t{font-family:"IBM Plex Mono",monospace;font-size:12.5px;fill:var(--ink)}
+.node text.s{font-family:"Archivo",sans-serif;font-size:10.5px;fill:var(--ink-3)}
+.node{cursor:pointer}
+.node:hover rect.body{fill:var(--panel)}
+.node.sel rect.body{stroke-width:2}
+.node.sel rect.body{stroke:currentColor}
+.edge{stroke:var(--rule-2);stroke-width:1.4;fill:none}
+.edgelabel{font-family:"Archivo",sans-serif;font-size:10.5px;fill:var(--ink-3)}
+.trip{stroke:var(--blocked);stroke-width:1.2;stroke-dasharray:4 4;fill:none;opacity:.75}
+
+.detail{margin-top:14px;border:1px solid var(--rule);border-radius:8px;background:var(--panel);overflow:hidden}
+.detail .head{padding:14px 18px;border-bottom:1px solid var(--rule);display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.detail .head h4{margin:0;font-size:16px}
+.detail dl{margin:0;padding:6px 18px 18px;display:grid;grid-template-columns:1fr;gap:0}
+@media(min-width:720px){.detail dl{grid-template-columns:132px 1fr;column-gap:22px}}
+.detail dt{font-family:"Archivo",sans-serif;font-size:12.5px;color:var(--ink-3);padding-top:12px;font-weight:500}
+.detail dd{margin:0;padding-top:4px;font-size:15.5px;color:var(--ink-2)}
+@media(min-width:720px){.detail dd{padding-top:12px}}
+.detail dd b{color:var(--ink);font-weight:600}
+
+/* ---------- layer stack ---------- */
+.layer{display:grid;grid-template-columns:52px 1fr;border:1px solid var(--rule);border-radius:7px;background:var(--panel);margin-bottom:8px;overflow:hidden}
+.layer .id{display:flex;align-items:center;justify-content:center;font-family:"IBM Plex Mono",monospace;font-weight:500;font-size:15px;color:#fff}
+.l1 .id{background:var(--progress)} .l2 .id{background:var(--ink-2)} .l3 .id{background:var(--gate)} .l4 .id{background:var(--blocked)}
+.layer .body{padding:13px 16px}
+.layer h4{font-size:15px;margin:0 0 3px}
+.layer p{margin:0;font-size:14.5px;color:var(--ink-2);max-width:none}
+.tagrow{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+.tag{font-family:"Archivo",sans-serif;font-size:11px;color:var(--ink-3);border:1px solid var(--rule);border-radius:3px;padding:2px 6px}
+
+/* ---------- tables ---------- */
+table{border-collapse:collapse;width:100%;font-family:"Archivo",sans-serif;font-size:13.5px}
+th{text-align:left;font-weight:600;color:var(--ink-3);font-size:12px;padding:9px 12px;border-bottom:1px solid var(--rule-2);white-space:nowrap}
+td{padding:10px 12px;border-bottom:1px solid var(--rule);vertical-align:top;color:var(--ink-2)}
+td b{color:var(--ink);font-weight:600}
+tr:last-child td{border-bottom:none}
+.tbl{background:var(--panel);border:1px solid var(--rule);border-radius:8px;overflow:hidden}
+.tbl .scroll table{min-width:660px}
+
+/* ---------- code ---------- */
+.codeblock{border:1px solid var(--rule);border-radius:8px;overflow:hidden;background:var(--panel)}
+.codehead{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;border-bottom:1px solid var(--rule);background:var(--panel-2)}
+.codehead .fn{font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--ink-2)}
+pre{margin:0;padding:16px;overflow-x:auto;font-size:12.6px;line-height:1.62;color:var(--ink);background:var(--panel)}
+.btn{font-family:"Archivo",sans-serif;font-size:12px;font-weight:500;color:var(--ink-2);background:var(--panel);
+  border:1px solid var(--rule-2);border-radius:5px;padding:5px 11px;cursor:pointer}
+.btn:hover{color:var(--ink);border-color:var(--ink-3)}
+.btn.primary{background:var(--progress);border-color:var(--progress);color:#fff}
+.btn.primary:hover{opacity:.9;color:#fff}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px}
+.tab{font-family:"Archivo",sans-serif;font-size:12.5px;padding:6px 11px;border-radius:5px;border:1px solid var(--rule);
+  background:var(--panel);color:var(--ink-2);cursor:pointer}
+.tab[aria-selected="true"]{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+
+/* ---------- tradeoff explorer ---------- */
+.explorer{display:grid;gap:18px;grid-template-columns:1fr}
+@media(min-width:900px){.explorer{grid-template-columns:300px minmax(0,1fr)}}
+.wrow{margin-bottom:11px}
+.wrow .lab{display:flex;justify-content:space-between;gap:8px;font-family:"Archivo",sans-serif;font-size:12.5px;color:var(--ink-2);margin-bottom:3px}
+.wrow .lab span:last-child{font-family:"IBM Plex Mono",monospace;color:var(--ink);font-size:12px}
+input[type=range]{width:100%;accent-color:var(--progress);height:18px}
+.optrow{border-bottom:1px solid var(--rule);padding:13px 0}
+.optrow:last-child{border-bottom:none}
+.optrow .top{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.optrow .nm{font-family:"Archivo",sans-serif;font-size:14.5px;font-weight:600;color:var(--ink)}
+.optrow .sc{font-family:"IBM Plex Mono",monospace;font-size:15px;color:var(--ink)}
+.bar{height:7px;border-radius:4px;background:color-mix(in srgb,var(--ink-3) 18%,transparent);margin-top:8px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--ink-3);border-radius:4px}
+.optrow.win .bar i{background:var(--verified)}
+.optrow.win .sc{color:var(--verified)}
+.note{font-family:"Archivo",sans-serif;font-size:12.5px;color:var(--ink-3);margin-top:6px}
+.badge{font-family:"Archivo",sans-serif;font-size:10.5px;border:1px solid var(--verified);color:var(--verified);border-radius:3px;padding:1px 5px;margin-left:7px;vertical-align:1px}
+
+/* ---------- decision cards ---------- */
+.dcard{border:1px solid var(--rule);border-left:3px solid var(--progress);border-radius:7px;background:var(--panel);padding:15px 17px}
+.dcard h4{font-size:14.5px;color:var(--ink-3);margin-bottom:8px;font-weight:500}
+.dcard .pick{font-family:"Archivo",sans-serif;font-size:15.5px;font-weight:600;color:var(--ink);margin-bottom:8px;line-height:1.35}
+.dcard p{font-size:14px;color:var(--ink-2);margin:0 0 10px;max-width:none}
+.flip{font-family:"Archivo",sans-serif;font-size:12.5px;color:var(--ink-2);border-top:1px dashed var(--rule-2);padding-top:9px}
+.flip b{color:var(--blocked);font-weight:600}
+
+/* ---------- checklist ---------- */
+.check{list-style:none;margin:0;padding:0}
+.check li{display:flex;gap:11px;align-items:flex-start;padding:11px 0;border-bottom:1px solid var(--rule)}
+.check li:last-child{border-bottom:none}
+.check input{margin-top:5px;width:16px;height:16px;accent-color:var(--verified);flex:none}
+.check .txt{font-size:15px;color:var(--ink-2)}
+.check .txt b{color:var(--ink);font-weight:600}
+.check input:checked + .txt{opacity:.5;text-decoration:line-through;text-decoration-color:var(--ink-3)}
+.progressline{font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--ink-3)}
+
+/* ---------- rubric scorer ---------- */
+.rubric select{font-family:"IBM Plex Mono",monospace;font-size:13px;padding:4px 6px;border:1px solid var(--rule-2);
+  border-radius:4px;background:var(--panel);color:var(--ink)}
+.verdict{font-family:"IBM Plex Mono",monospace;font-size:12px;padding:3px 8px;border-radius:4px;border:1px solid}
+.v-pass{color:var(--verified);border-color:var(--verified);background:color-mix(in srgb,var(--verified) 10%,transparent)}
+.v-fail{color:var(--blocked);border-color:var(--blocked);background:color-mix(in srgb,var(--blocked) 10%,transparent)}
+
+.callout{border:1px solid var(--rule-2);border-radius:7px;background:var(--panel-2);padding:15px 17px;margin:18px 0}
+.callout p{margin:0;font-size:15px;max-width:none}
+.callout p + p{margin-top:9px}
+
+ul.plain{margin:0 0 14px;padding-left:20px;max-width:70ch}
+ul.plain li{margin-bottom:7px}
+
+footer{padding:40px 0 70px;border-top:1px solid var(--rule);color:var(--ink-3);font-family:"Archivo",sans-serif;font-size:13px}
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:var(--ink);color:var(--paper);
+  padding:9px 16px;border-radius:6px;font-family:"Archivo",sans-serif;font-size:13px;opacity:0;pointer-events:none;transition:opacity .18s}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+
+<div class="layout">
+
+<nav aria-label="Sections">
+  <div class="navtitle">Feature Loop Protocol</div>
+  <ol>
+    <li><a href="#loop" class="on">The loop</a></li>
+    <li><a href="#layers">Four layers</a></li>
+    <li><a href="#memory">Memory</a></li>
+    <li><a href="#files">Files &amp; prompts</a></li>
+    <li><a href="#phases">Phases</a></li>
+    <li><a href="#decisions">Decisions</a></li>
+    <li><a href="#limits">Limits &amp; metrics</a></li>
+    <li><a href="#dag">Your tickets</a></li>
+    <li><a href="#week">This week</a></li>
+    <li><a href="#bootstrap">Bootstrap</a></li>
+    <li><a href="#run">Running it</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<header class="mast">
+  <p class="kicker">Feature Loop Protocol (FLP) · operating manual for #9–#12</p>
+  <h1>One agent writes it. A different agent proves it.</h1>
+  <p class="lede">Everything in this protocol comes from one rule: the thing that built the feature is never the thing that accepts it. Everything else — the ledger, the labels, the budgets, the escalation ladder — exists to make that rule cheap enough to run on every ticket.</p>
+  <div class="facts">
+    <span class="fact"><b>4</b> layers</span>
+    <span class="fact"><b>5</b> states</span>
+    <span class="fact"><b>3</b> memory tiers</span>
+    <span class="fact">onboarding read <b>≤15k tokens</b></span>
+    <span class="fact">cap <b>8</b> iterations · <b>3</b> verify rounds · <b>400k</b> tokens · <b>2h</b></span>
+  </div>
+</header>
+
+<!-- ============ 1. THE LOOP ============ -->
+<section id="loop">
+  <h2>The loop, as a state machine</h2>
+  <p class="sub">GitHub labels are the live state; the repo files are the memory. Each <code>/loop</code> tick reads state, advances exactly one step, and exits. Click a state to see who acts and what has to be true to leave it.</p>
+
+  <div class="diagram">
+    <div class="svgwrap">
+      <svg viewBox="0 0 1020 246" role="img" aria-label="State machine: ready-for-agent to in-progress to gate-pending to verified to merged, with a NEEDS_WORK loop back and an escalation path to blocked">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <g style="color:var(--rule-2)">
+          <path class="edge" d="M176 92 H210" marker-end="url(#ah)"/>
+          <path class="edge" d="M386 92 H420" marker-end="url(#ah)"/>
+          <path class="edge" d="M596 92 H630" marker-end="url(#ah)"/>
+          <path class="edge" d="M806 92 H840" marker-end="url(#ah)"/>
+          <path class="edge" d="M508 120 V140 Q508 150 498 150 H308 Q298 150 298 140 V126" marker-end="url(#ah)"/>
+        </g>
+        <text class="edgelabel" x="193" y="80" text-anchor="middle">spawn</text>
+        <text class="edgelabel" x="403" y="80" text-anchor="middle">claims</text>
+        <text class="edgelabel" x="613" y="80" text-anchor="middle">PASS</text>
+        <text class="edgelabel" x="823" y="80" text-anchor="middle">merge</text>
+        <text class="edgelabel" x="403" y="167" text-anchor="middle" style="fill:var(--gate)">NEEDS_WORK — raw failing output becomes the next prompt</text>
+
+        <g class="trip">
+          <path d="M250 120 V200"/><path d="M460 120 V200"/><path d="M670 120 V200"/>
+          <path d="M250 200 H830"/>
+        </g>
+        <g style="color:var(--blocked)"><path class="edge" d="M830 200 H846" marker-end="url(#ah)" style="stroke:var(--blocked)"/></g>
+        <text class="edgelabel" x="470" y="218" text-anchor="middle" style="fill:var(--blocked)">escalation trigger fired, or a budget cap hit</text>
+
+        <g class="node sel" data-k="ready" tabindex="0" role="button" aria-label="ready-for-agent" style="color:var(--ready)">
+          <rect class="body" x="8" y="64" width="168" height="56" rx="6" stroke="var(--ready)"/>
+          <rect x="8" y="64" width="4" height="56" rx="2" fill="var(--ready)"/>
+          <text class="t" x="24" y="88">ready-for-agent</text>
+          <text class="s" x="24" y="105">deps merged, spec frozen</text>
+        </g>
+        <g class="node" data-k="prog" tabindex="0" role="button" aria-label="agent in-progress" style="color:var(--progress)">
+          <rect class="body" x="218" y="64" width="168" height="56" rx="6" stroke="var(--progress)"/>
+          <rect x="218" y="64" width="4" height="56" rx="2" fill="var(--progress)"/>
+          <text class="t" x="234" y="88">agent:in-progress</text>
+          <text class="s" x="234" y="105">implementer, cheap model</text>
+        </g>
+        <g class="node" data-k="gate" tabindex="0" role="button" aria-label="agent gate-pending" style="color:var(--gate)">
+          <rect class="body" x="428" y="64" width="168" height="56" rx="6" stroke="var(--gate)"/>
+          <rect x="428" y="64" width="4" height="56" rx="2" fill="var(--gate)"/>
+          <text class="t" x="444" y="88">agent:gate-pending</text>
+          <text class="s" x="444" y="105">verifier, read-only</text>
+        </g>
+        <g class="node" data-k="ver" tabindex="0" role="button" aria-label="agent verified" style="color:var(--verified)">
+          <rect class="body" x="638" y="64" width="168" height="56" rx="6" stroke="var(--verified)"/>
+          <rect x="638" y="64" width="4" height="56" rx="2" fill="var(--verified)"/>
+          <text class="t" x="654" y="88">agent:verified</text>
+          <text class="s" x="654" y="105">evidence on the PR</text>
+        </g>
+        <g class="node" data-k="merged" tabindex="0" role="button" aria-label="merged" style="color:var(--ink-2)">
+          <rect class="body" x="848" y="64" width="164" height="56" rx="6" stroke="var(--ink-2)"/>
+          <rect x="848" y="64" width="4" height="56" rx="2" fill="var(--ink-2)"/>
+          <text class="t" x="864" y="88">merged</text>
+          <text class="s" x="864" y="105">DAG re-evaluates here</text>
+        </g>
+        <g class="node" data-k="blocked" tabindex="0" role="button" aria-label="agent blocked" style="color:var(--blocked)">
+          <rect class="body" x="848" y="178" width="164" height="44" rx="6" stroke="var(--blocked)"/>
+          <rect x="848" y="178" width="4" height="44" rx="2" fill="var(--blocked)"/>
+          <text class="t" x="864" y="199">agent:blocked</text>
+          <text class="s" x="864" y="214">stops for a human</text>
+        </g>
+      </svg>
+    </div>
+  </div>
+
+  <div class="detail" id="stateDetail" aria-live="polite"></div>
+
+  <div class="callout">
+    <p><b>The one thing to never break:</b> the implementer's "tests pass" is not the accept signal. A criterion counts as passed only when the verifier can point at unedited output it produced itself. If a criterion cannot be made to <em>fail</em> under a wrong implementation, it isn't a check — the verifier flags it untestable instead of passing it.</p>
+  </div>
+</section>
+
+<!-- ============ 2. LAYERS ============ -->
+<section id="layers">
+  <h2>What each layer is responsible for</h2>
+  <p class="sub">Loop engineering is L1 + L3 + L4. Adding L2 — and, later, parallel independent reviewers — is what turns it into graph engineering.</p>
+
+  <div class="layer l1"><div class="id">L1</div><div class="body">
+    <h4>Execution — the Ralph mechanism</h4>
+    <p>Same prompt, fresh context, restart on exit, mechanical stop condition. Context is deliberately thrown away every iteration; the ledger is the memory, not the transcript.</p>
+    <div class="tagrow"><span class="tag">fresh context per iteration</span><span class="tag">idempotent prompt</span><span class="tag">cheap model</span></div>
+  </div></div>
+
+  <div class="layer l2"><div class="id">L2</div><div class="body">
+    <h4>Scheduling — the dependency graph</h4>
+    <p>A durable dependency store that lives outside any agent's context. Dependency resolution is a trigger fired <em>on merge</em>, never a poll of what some agent remembers.</p>
+    <div class="tagrow"><span class="tag">depends_on / blocks in LOOP.md</span><span class="tag">re-evaluated at merge</span></div>
+  </div></div>
+
+  <div class="layer l3"><div class="id">L3</div><div class="body">
+    <h4>Verification gate</h4>
+    <p>Acceptance criteria and the test runner sit outside the implementer's write scope. The gate consumes evidence, not self-report. This is the single highest-leverage correctness control in the whole design.</p>
+    <div class="tagrow"><span class="tag">read-only verifier</span><span class="tag">strong model</span><span class="tag">PASS / NEEDS_WORK</span></div>
+  </div></div>
+
+  <div class="layer l4"><div class="id">L4</div><div class="body">
+    <h4>Escalation ladder</h4>
+    <p>Scrutiny scales to reversibility and blast radius. Low-risk reversible changes merge automatically; schema, migrations, irreversible and security changes need a human. Uniform gating produces rubber-stamping, which is the same as no gate.</p>
+    <div class="tagrow"><span class="tag">risk-scaled, not uniform</span><span class="tag">hard budget caps</span></div>
+  </div></div>
+</section>
+
+<!-- ============ 3. MEMORY ============ -->
+<section id="memory">
+  <h2>How a brand-new agent learns from the agents before it</h2>
+  <p class="sub">Three tiers, in the repo, git-tracked, read by progressive disclosure. The constitution is the only thing always loaded; everything else is pull, not push.</p>
+
+  <div class="grid3">
+    <div class="panel pad">
+      <h4>Tier 1 — the constitution</h4>
+      <p style="font-size:14.5px;color:var(--ink-2)"><code>CONVENTIONS.md</code> + <code>CLAUDE.md</code>. A ~100-line index that points at deeper docs. Project-wide non-negotiables. This is where distilled learnings get promoted so future agents get them for free.</p>
+      <p class="note">Always read.</p>
+    </div>
+    <div class="panel pad">
+      <h4>Tier 2 — per-feature loop records</h4>
+      <p style="font-size:14.5px;color:var(--ink-2)"><code>.loop/&lt;id&gt;/</code> holds <code>LOOP.md</code> (manifest), <code>journal.md</code> (append-only), <code>retro.md</code> (written at close).</p>
+      <p class="note">Current feature always; last 5–10 journal entries only.</p>
+    </div>
+    <div class="panel pad">
+      <h4>Tier 3 — the index</h4>
+      <p style="font-size:14.5px;color:var(--ink-2)"><code>.loop/INDEX.md</code>: one row per past feature — outcome, iterations-to-green, rejection rate, key learning, link. The cheap onboarding scan.</p>
+      <p class="note">Always read; links out only on demand.</p>
+    </div>
+  </div>
+
+  <h3>The onboarding read, in order</h3>
+  <div class="tbl"><div class="scroll"><table>
+    <thead><tr><th style="width:38px">#</th><th>Read</th><th>When</th></tr></thead>
+    <tbody>
+      <tr><td><b>1</b></td><td><code>CONVENTIONS.md</code> + <code>CLAUDE.md</code></td><td>Always</td></tr>
+      <tr><td><b>2</b></td><td><code>.loop/INDEX.md</code> — the compressed history</td><td>Always</td></tr>
+      <tr><td><b>3</b></td><td>The current feature's <code>LOOP.md</code></td><td>Always</td></tr>
+      <tr><td><b>4</b></td><td>The last 5–10 entries of <code>journal.md</code></td><td>Always — the tail, not the file</td></tr>
+      <tr><td><b>5</b></td><td><code>retro.md</code> of related past features</td><td>On demand, matched by tags in the index. Never all of them.</td></tr>
+    </tbody>
+  </table></div></div>
+  <p class="note" style="margin-top:10px">Hard budget: ≤ ~15k tokens before any work begins. If <code>journal.md</code> passes ~2k lines, compact the older entries into a summary block.</p>
+
+  <h3>Why files, and not PR comments or an external database</h3>
+  <p>Files travel with the code in git, they diff, they audit, they survive a tool change, and they read cold from a fresh context. PR and issue state is used as the <em>live state machine</em> and the audit trail — not as primary memory.</p>
+
+  <h3>Keeping the memory from rotting</h3>
+  <ul class="plain">
+    <li><b>Fresh context per iteration</b> prevents context rot. The ledger is memory; the transcript is not.</li>
+    <li><b>Progressive disclosure:</b> index and summaries always, full journals only on demand, compact past ~2k lines.</li>
+    <li><b>Explicit supersession:</b> every retro carries a <code>## Superseded</code> block. When a learning is promoted into the constitution, the retro line is checked off and the older contradicted guidance is marked superseded — so stale rules can't quietly accumulate.</li>
+    <li><b>Re-simplify on model upgrades:</b> newer models drift less. After each release, re-ask how much of <code>CLAUDE.md</code> is still earning its place.</li>
+  </ul>
+</section>
+
+<!-- ============ 4. FILES & PROMPTS ============ -->
+<section id="files">
+  <h2>The files and the two prompts</h2>
+  <p class="sub">Copy these straight into the repo. The two prompts are the whole orchestration: one advances state, one refuses to trust it.</p>
+
+  <div class="tabs" role="tablist" id="tmplTabs">
+    <button class="tab" role="tab" aria-selected="true" data-t="loopmd">LOOP.md</button>
+    <button class="tab" role="tab" aria-selected="false" data-t="journal">journal.md</button>
+    <button class="tab" role="tab" aria-selected="false" data-t="retro">retro.md</button>
+    <button class="tab" role="tab" aria-selected="false" data-t="index">INDEX.md</button>
+    <button class="tab" role="tab" aria-selected="false" data-t="orch">/loop prompt</button>
+    <button class="tab" role="tab" aria-selected="false" data-t="verif">verifier prompt</button>
+  </div>
+
+  <div class="codeblock" data-p="loopmd">
+    <div class="codehead"><span class="fn">.loop/&lt;feature-id&gt;/LOOP.md — the feature manifest</span><button class="btn copy">Copy</button></div>
+<pre>---
+id: "11"
+title: "Persist chat threads to Postgres"
+goal: "Threads survive a server restart; visible only to their owner."
+spec_link: "https://github.com/sumanththota/rag-engine/issues/11"   # immutable audit anchor
+dag:
+  depends_on: ["9"]        # password auth
+  blocks: ["12"]           # sync threads on login
+acceptance_criteria:       # written BEFORE implementation; each must be able to FAIL
+  - "POST /threads, restart a test app instance on an ephemeral port, GET /threads
+     returns the thread"   # never :8080 — that server is shared, see CONVENTIONS §7
+  - "User A cannot GET User B's thread (403)"
+  - "pytest -q tests/test_threads.py green with test-11-* fixtures"
+verifier_command: "pytest -q tests/test_threads.py -k thread"
+escalation_triggers:
+  - "schema/migration touches an existing table"
+  - "the SAME criterion fails in 3 separate verify rounds"   # not the same counter as
+                                                             # max_verify_rounds below
+  - "any edit outside app/threads/ or the agent's own main.py region"
+# max_iterations is the only budget anything checks (the orchestrator counts journal
+# entries). max_tokens and wall_clock are review prompts — nothing measures them.
+budgets: { max_iterations: 8, max_verify_rounds: 3, max_tokens: 400000, wall_clock: "2h" }
+# Documentation only. The tier that actually routes is `model:` in each .claude/agents/*.md,
+# and it takes an alias — haiku / sonnet / opus / inherit — not a full model string.
+model_routing: { implementer: "haiku", verifier: "opus", planner: "opus" }
+state: "agent:in-progress"   # mirrors the GitHub label
+branches: { impl: "impl/11-persist-threads", verify: "verify/11-persist-threads" }
+---
+## Context (progressive disclosure — links, not inlined bodies)
+- Convention refs: CONVENTIONS.md §7 (agent-loop testing), §3 (DB access)
+- Hotspot files &amp; owned regions: app/main.py -&gt; only the `# region: threads` block</pre>
+  </div>
+
+  <div class="codeblock" data-p="journal" hidden>
+    <div class="codehead"><span class="fn">.loop/&lt;feature-id&gt;/journal.md — append only, newest at bottom</span><button class="btn copy">Copy</button></div>
+<pre>## 2026-09-17T14:02 iteration 3 · implementer(haiku) · branch impl/11
+- did: added ThreadRepository, migration 0007, wired POST/GET /threads
+- evidence: pytest 9/11 green (test-11-* ids); ran migration on scratch DB
+- next: owner-isolation still red (403 not returned)
+- tokens: 38k · state stays agent:in-progress   # never gate with a known-red criterion
+
+## 2026-09-17T14:31 iteration 4 · implementer(haiku) · branch impl/11
+- did: owner filter on ThreadRepository.get; 403 on cross-owner read
+- evidence: pytest 11/11 green (test-11-* ids)
+- tokens: 47k · state-&gt;agent:gate-pending
+
+## 2026-09-17T14:52 verify round 1 · verifier(opus) · branch verify/11
+- verdict: NEEDS_WORK — criterion 1 fails: after restarting the test instance,
+  GET /threads returns [] (threads held in process memory, never committed)
+- evidence: pasted failing pytest output (unedited)
+- state-&gt;agent:in-progress   # 11/11 green and still rejected — that is the gate working</pre>
+  </div>
+
+  <div class="codeblock" data-p="retro" hidden>
+    <div class="codehead"><span class="fn">.loop/&lt;feature-id&gt;/retro.md — written at close; this is the compounding step</span><button class="btn copy">Copy</button></div>
+<pre>## Outcome: merged 2026-09-18 · iterations-to-green: 5 · verifier-rejections: 2
+
+## What made this hard
+- Owner isolation wasn't in the spec; discovered during verify.
+
+## Learnings -&gt; promote
+- [x] -&gt; CONVENTIONS.md §7: "every reads-by-owner endpoint needs a cross-owner 403 test"
+- [ ] -&gt; skill: scaffold owner-isolation test (candidate, not yet reusable)
+
+## Superseded
+- Supersedes retro guidance in feature #9 about single-user assumptions</pre>
+  </div>
+
+  <div class="codeblock" data-p="index" hidden>
+    <div class="codehead"><span class="fn">.loop/INDEX.md — the onboarding scan, one row per feature</span><button class="btn copy">Copy</button></div>
+<pre>| id | title           | outcome | iters | verif-reject | tokens | key learning                       | link             |
+|----|-----------------|---------|-------|--------------|--------|------------------------------------|------------------|
+| 9  | password auth   | merged  | 4     | 1            | 260k   | test data must be ticket-tagged    | .loop/9/retro.md |
+| 11 | persist threads | merged  | 5     | 2            | 410k   | owner-isolation 403 tests required | .loop/11/retro.md|</pre>
+  </div>
+
+  <div class="codeblock" data-p="orch" hidden>
+    <div class="codehead"><span class="fn">.claude/commands/loop.md — state-first, idempotent orchestrator</span><button class="btn copy">Copy</button></div>
+<pre>You are the ORCHESTRATOR for one DAG step. You do NOT write feature code yourself.
+Run once, then exit (a fresh context restarts you next tick).
+
+1. READ STATE (no writes yet):
+   - gh: list issues #9-#12 with labels; list open PRs and their draft/ready state.
+   - .loop/INDEX.md and each open feature's LOOP.md `state`.
+2. IDEMPOTENCY: output "NO-OP" and STOP only if there is no state change AND no newly
+   ready work. A human label change counts as a change even with no new journal entry.
+3. STALENESS: if a feature has sat in agent:in-progress or agent:gate-pending with no new
+   journal entry for &gt;30 min, treat it as a dead agent — label agent:blocked, write
+   "stalled, no journal entry since &lt;ts&gt;", STOP. Silence is a failure, not a wait.
+4. PICK EXACTLY ONE ready DAG step (all depends_on merged; label `ready-for-agent`).
+   If none ready, STOP.
+5. ADVANCE ONE STEP based on state:
+   - ready-for-agent  -&gt; open draft PR; create branch impl/&lt;id&gt;-* yourself (subagent
+     worktrees get temporary worktree-* branches and will not land on impl/ on their own);
+     spawn IMPLEMENTER (cheap model, isolation: worktree). Instruct: touch only owned
+     regions; use test-&lt;id&gt;-* fixtures; do NOT boot the shared dev server on :8080 —
+     verify via pytest, spinning up a test instance on an ephemeral port where a
+     criterion needs one; append to .loop/&lt;id&gt;/journal.md; set label agent:gate-pending
+     ONLY with every self-test green.
+   - agent:gate-pending -&gt; spawn VERIFIER (strong model, separate branch verify/&lt;id&gt;-*,
+     Write and Edit disallowed). Run verifier_command. The VERIFIER posts its own raw
+     verdict to the PR with gh — you must not relay it, since you only receive its summary
+     and relaying would paraphrase the thing that gates the merge.
+     PASS -&gt; label agent:verified, mark PR ready. NEEDS_WORK -&gt; label agent:in-progress.
+   - agent:verified -&gt; before merging, confirm verify/&lt;id&gt;-* has an EMPTY diff against
+     impl/&lt;id&gt;-*; a verifier that edited anything has invalidated its own verdict.
+     Then (human, or auto if within blast-radius policy) merge; on merge, re-evaluate DAG:
+     any issue whose depends_on are all merged -&gt; label ready-for-agent.
+     Write retro.md; update INDEX.md; promote checked learnings into CONVENTIONS.md.
+6. STOP CONDITIONS (hard): count this feature's journal entries as iterations; if
+   max_iterations is exceeded, or any escalation_trigger fired, label agent:blocked, write
+   the reason to journal.md, and STOP for a human. Nothing measures max_tokens or
+   wall_clock — read them off the journal yourself at each tick.
+
+Never advance more than one step. Never let the implementer's "tests pass" be the accept signal.</pre>
+  </div>
+
+  <div class="codeblock" data-p="verif" hidden>
+    <div class="codehead"><span class="fn">.claude/agents/verifier.md — Write and Edit disallowed; Bash allowed for pytest and gh</span><button class="btn copy">Copy</button></div>
+<pre>You are the VERIFIER. A separate implementer claims feature &lt;id&gt; is complete.
+You did NOT see how it was built and must NOT trust its self-assessment.
+You have NO Write/Edit access. Do NOT read .loop/&lt;id&gt;/journal.md — it is the
+implementer's account of its own work, and reading it reintroduces the self-report
+this gate exists to remove. You get the criteria, the diff, and the test runner.
+
+1. Read .loop/&lt;id&gt;/LOOP.md acceptance_criteria (the contract, written before code).
+2. For EACH criterion, run the real check (verifier_command + the criterion's own steps).
+   A criterion passes only with evidence you can point to (unedited test output / exit code).
+3. Any criterion you cannot make FAIL under a wrong implementation is not a real check —
+   flag it as untestable rather than passing it.
+4. Begin your reply with exactly PASS or NEEDS_WORK on its own line.
+   On NEEDS_WORK, list the failing criterion + the raw output; that becomes the
+   implementer's next prompt.
+5. Do not paraphrase failures into "mostly passing." The raw verdict gates the merge.
+6. Post the verdict to the PR yourself: `gh pr comment &lt;n&gt; --body-file -`. Do not hand it
+   back for someone else to relay — your caller receives only a summary of you, and a
+   summarised verdict is a paraphrased one.</pre>
+  </div>
+</section>
+
+<!-- ============ 5. PHASES ============ -->
+<section id="phases">
+  <h2>Lifecycle, phase by phase</h2>
+  <p class="sub">Inputs, the artifact each phase leaves behind, who runs it, and the condition that lets it end.</p>
+  <div class="tbl"><div class="scroll"><table>
+    <thead><tr><th>Phase</th><th>In</th><th>Artifact out</th><th>Who</th><th>Exits when</th></tr></thead>
+    <tbody>
+      <tr><td><b>Intake &amp; readiness scoring</b></td><td>Issue body</td><td>Rubric score in <code>LOOP.md</code></td><td>Planner (strong) / human</td><td>≥4/5 on acceptance criteria and context</td></tr>
+      <tr><td><b>Spec freeze</b></td><td>Scored issue</td><td>Immutable issue body = spec; <code>spec_link</code></td><td>Human</td><td>Criteria are falsifiable</td></tr>
+      <tr><td><b>Plan / DAG</b></td><td>Specs</td><td><code>dag</code> block; index row</td><td>Planner (strong)</td><td>Dependencies explicit</td></tr>
+      <tr><td><b>Env isolation preflight</b></td><td>Repo</td><td>Worktree; <code>.worktreeinclude</code> copies <code>.env</code>; <code>.venv</code> <b>rebuilt in the worktree</b>, never copied</td><td>Orchestrator</td><td>pytest green in the worktree, on a venv built there</td></tr>
+      <tr><td><b>Execute (L1)</b></td><td><code>LOOP.md</code>, journal tail</td><td>Diff on <code>impl/&lt;id&gt;</code>; journal entry</td><td>Implementer (cheap)</td><td>One feature done, self-tests green, committed</td></tr>
+      <tr><td><b>Verify (L3)</b></td><td>Acceptance criteria</td><td>PASS / NEEDS_WORK + raw evidence on the PR</td><td>Verifier (strong, read-only)</td><td>Every criterion passes with evidence</td></tr>
+      <tr><td><b>Escalate (L4)</b></td><td>Triggers, budgets</td><td><span class="chip c-blk">agent:blocked</span> + reason</td><td>Human</td><td>Human decision recorded</td></tr>
+      <tr><td><b>Merge &amp; DAG re-eval (L2)</b></td><td>Verified PR</td><td>Merge; newly-ready issues labeled</td><td>Human, or auto by blast radius</td><td>DAG advanced on merge — not on agent exit</td></tr>
+      <tr><td><b>Retro &amp; compaction</b></td><td>Journal, outcome</td><td><code>retro.md</code>; index row; promoted learnings</td><td>Planner + human</td><td>Learnings promoted or discarded</td></tr>
+      <tr><td><b>Next-feature onboarding</b></td><td>Constitution, index, related retros</td><td>Fresh implementer context</td><td>New implementer</td><td>Onboarding read ≤ budget</td></tr>
+    </tbody>
+  </table></div></div>
+  <p class="note" style="margin-top:10px">A worktree carries tracked files only, so a fresh one has no <code>.env</code> and no <code>.venv</code> — pytest fails there before any agent has done anything wrong. <code>.worktreeinclude</code> copies gitignored files matching its patterns (tracked files are never duplicated), which handles <code>.env</code>. A venv is the exception: copying one usually breaks it, because absolute paths are baked into <code>pyvenv.cfg</code> and the scripts. Rebuild it in the worktree. And if you solve that with a <code>WorktreeCreate</code> hook, the hook replaces the default creation logic entirely and <code>.worktreeinclude</code> stops being processed — so that hook has to copy <code>.env</code> as well.</p>
+</section>
+
+<!-- ============ 6. DECISIONS ============ -->
+<section id="decisions">
+  <h2>The decisions, and what would change them</h2>
+  <p class="sub">Move the weights and watch the ranking move. The scores are fixed judgments from the design; the totals recompute live, so they can differ by a few hundredths from the ones written in the doc. The benchmark figures quoted across this page come from that doc's own sources and haven't been re-checked here.</p>
+
+  <div class="panel pad">
+    <div class="explorer">
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px">
+          <h4 style="margin:0">Criteria weights</h4>
+          <button class="btn" id="resetW">Reset</button>
+        </div>
+        <div id="weights"></div>
+      </div>
+      <div>
+        <h4 style="margin:0 0 4px">Where loop memory lives</h4>
+        <p class="note" style="margin:0 0 4px">Weighted total out of 5.</p>
+        <div id="options"></div>
+        <p class="note" id="sens" style="margin-top:12px"></p>
+      </div>
+    </div>
+  </div>
+
+  <h3>Everything else that was decided</h3>
+  <div class="grid2" style="margin-top:14px">
+    <div class="dcard">
+      <h4>State machine</h4>
+      <div class="pick">GitHub labels + PR state, comments as append-only audit</div>
+      <p>Native, visible to humans and tooling, zero infrastructure for four tickets. An in-repo state file loses on legibility; a dedicated task store only wins at scale.</p>
+      <div class="flip">Flip when <b>concurrent ready-work passes ~8–10</b>, or dependencies span repos.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--gate)">
+      <h4>Verification</h4>
+      <div class="pick">Independent verifier agent now, strong model, read-only</div>
+      <p>Self-report scores ~1.6 and fails outright; same-agent tests are structurally optimistic. Human sign-off stays mandatory on schema and irreversible changes.</p>
+      <div class="flip">Add CI as the deterministic floor <b>the moment it exists</b> — it lifts correctness at near-zero human cost.</div>
+    </div>
+    <div class="dcard">
+      <h4>Model routing</h4>
+      <div class="pick">Cheap implementer, strong verifier and planner</div>
+      <p>Uniform-strong scores 3.6, uniform-cheap 3.0, split routing 4.1. Loop shape moves cost far more than model choice does.</p>
+      <div class="flip">Promote the implementer a tier if <b>verifier-rejection exceeds ~40%</b> — rework eats the savings.</div>
+    </div>
+    <div class="dcard">
+      <h4>Parallel vs sequential</h4>
+      <div class="pick">Parallelize only independent atomic work; keep dependent decisions sequential</div>
+      <p>Shared live Postgres with no test isolation makes unbounded parallelism score badly on correctness and blast radius. Ticket-tagged fixtures plus per-agent owned regions in <code>main.py</code> recover most of the throughput safely.</p>
+      <div class="flip">Widen the fan-out once there is <b>real per-agent DB or schema isolation</b>.</div>
+    </div>
+    <div class="dcard">
+      <h4>Trigger</h4>
+      <div class="pick">Poll label and PR state on each <code>/loop</code> tick</div>
+      <p>Simple, idempotent, and free of the <code>issues.labeled</code> webhook duplicate-firing problem. Four tickets do not justify event plumbing.</p>
+      <div class="flip">Move to webhooks when <b>human merge latency dominates cycle time</b>, or volume passes dozens.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--blocked)">
+      <h4>Escalation gating</h4>
+      <div class="pick">Risk-scaled ladder</div>
+      <p>A blanket human gate scores ~3.4 on safety-plus-fatigue; no gate scores ~2.2; the ladder ~4.4. Too many gates produce rubber-stamping, which is the failure the gate was meant to prevent.</p>
+      <div class="flip">Auto-merge reversible low-risk work. <b>Always gate</b> schema, migrations, irreversible and security changes.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--verified)">
+      <h4>Learning capture</h4>
+      <div class="pick">Short structured retro, distilled into the constitution and the index</div>
+      <p>Free-form notes score mid on legibility and durability; capturing nothing forfeits the entire cross-feature ask. The cost risk is extraction time — keep retros short and promote selectively.</p>
+      <div class="flip">Promote <b>at most a few learnings</b> per feature. Everything else stays in the retro or dies there.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--ink-3)">
+      <h4>Where memory lives</h4>
+      <div class="pick">In-repo files as primary, labels and PRs as live state and audit</div>
+      <p>Files travel with the code, diff, audit, and read cold. The explorer above is this decision — push the scalability weight past ~0.20 and an external store overtakes it.</p>
+      <div class="flip">Adopt an external DAG store <b>when work spans repos</b> or ready-work outgrows labels.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 7. LIMITS ============ -->
+<section id="limits">
+  <h2>Budgets, triggers, and the numbers that re-tune them</h2>
+  <p class="sub">Caps are tripwires, not targets. Hitting one is information, not failure — but only one of them is actually wired to anything.</p>
+
+  <div class="callout">
+    <p><b>Declaring a constraint is not enforcing one.</b> Three separate things in this design are YAML that no code reads: <code>model_routing</code>, <code>budgets</code>, and — because it depends on budgets — most of the L4 ladder. A manifest that says <code>max_tokens: 400000</code> reads like a guardrail and behaves like a comment. Treat the table below as the honest version: one cap is checkable, one is a habit, and two are prompts to look at something yourself.</p>
+    <p>The same trap catches <code>model_routing</code> (the tier that routes lives in the subagent's own frontmatter) and the read-only verifier (the boundary that holds is the empty diff, not the tool list). Whenever this protocol states a limit, ask what would notice if it were exceeded.</p>
+  </div>
+
+  <div class="grid2">
+    <div class="tbl"><div class="scroll"><table>
+      <thead><tr><th>Cap</th><th>Start at</th><th>What enforces it</th></tr></thead>
+      <tbody>
+        <tr><td><b>L1 iterations</b></td><td><b>8</b></td><td><b>The orchestrator</b>, by counting journal entries for the feature. The only cap with a real check.</td></tr>
+        <tr><td><b>L3 verify rounds</b></td><td><b>3</b></td><td>Countable the same way. Three failures on one criterion means the spec is probably wrong.</td></tr>
+        <tr><td><b>Tokens per feature</b></td><td><b>~400k</b></td><td><b>Nothing.</b> Only as accurate as what agents write into the journal. A prompt to check, not a tripwire.</td></tr>
+        <tr><td><b>Wall clock</b></td><td><b>2h</b></td><td><b>Nothing.</b> Your own glance, or the staleness rule in the orchestrator prompt.</td></tr>
+        <tr><td><b>Concurrent agents</b></td><td><b>2</b></td><td>You, by not starting a third. Shared DB and a hotspot file.</td></tr>
+      </tbody>
+    </table></div></div>
+
+    <div class="tbl"><div class="scroll"><table>
+      <thead><tr><th>Log per feature</th><th>Reads as</th></tr></thead>
+      <tbody>
+        <tr><td><b>Iterations to green</b></td><td>Spec quality</td></tr>
+        <tr><td><b>Verifier-rejection rate</b></td><td>Whether the implementer tier is right</td></tr>
+        <tr><td><b>Escalations</b></td><td>Whether the ladder is calibrated</td></tr>
+        <tr><td><b>Tokens / cost per accepted PR</b></td><td>Loop shape, not model price</td></tr>
+        <tr><td><b>Drift incidents</b></td><td>Edits outside owned scope</td></tr>
+        <tr><td><b>Rework after merge</b></td><td>Reverts or hotfixes inside two weeks — the sharpest quality signal there is</td></tr>
+      </tbody>
+    </table></div></div>
+  </div>
+
+  <h3>Thresholds that change the plan</h3>
+  <div class="tbl"><div class="scroll"><table>
+    <thead><tr><th>When this happens</th><th>Do this</th></tr></thead>
+    <tbody>
+      <tr><td>CI becomes feasible at all</td><td><b>Add it immediately</b> — the cheapest correctness win available</td></tr>
+      <tr><td>Verifier-rejection stays under ~10% across several features</td><td>Drop the implementer a tier</td></tr>
+      <tr><td>Verifier-rejection exceeds ~40%</td><td>Promote the implementer a tier</td></tr>
+      <tr><td>Rework-after-merge starts rising</td><td>Tighten L3, or add CI</td></tr>
+      <tr><td>Concurrent ready-work exceeds ~8–10, or deps span repos</td><td>Move the DAG to an external store</td></tr>
+      <tr><td>Parallel race incidents recur</td><td>Build real per-agent DB and test isolation</td></tr>
+      <tr><td>Human merge latency dominates cycle time</td><td>Move from polling to webhooks</td></tr>
+    </tbody>
+  </table></div></div>
+
+  <h3>Your own blockers, and what closes them</h3>
+  <div class="tbl"><div class="scroll"><table>
+    <thead><tr><th>Blocker on the signal board</th><th>What closes it</th></tr></thead>
+    <tbody>
+      <tr><td>No test isolation</td><td>Ticket-tagged fixtures <code>test-&lt;id&gt;-*</code>, per-agent worktrees, owned regions in <code>main.py</code>, never boot the shared dev server</td></tr>
+      <tr><td>No verification gate</td><td>L3: read-only verifier on a <code>verify/&lt;id&gt;-*</code> branch, PASS/NEEDS_WORK with raw evidence</td></tr>
+      <tr><td>No escalation trigger</td><td><code>escalation_triggers</code> in every <code>LOOP.md</code>, wired to <span class="chip c-blk">agent:blocked</span></td></tr>
+      <tr><td>DAG re-eval fires on agent exit</td><td>Move it to <b>merge</b>: dependency resolution is a merge trigger, not a poll of agent memory</td></tr>
+      <tr><td>No budget or backoff ceiling</td><td>The <code>budgets</code> block: iterations, verify rounds, tokens, wall clock, concurrency</td></tr>
+    </tbody>
+  </table></div></div>
+</section>
+
+<!-- ============ 8. DAG ============ -->
+<section id="dag">
+  <h2>#9 → #10 ∥ #11 → #12</h2>
+  <p class="sub">One blocking feature, one safe parallel pair, one dependent finish.</p>
+
+  <div class="diagram">
+    <div class="svgwrap">
+      <svg viewBox="0 0 800 208" role="img" aria-label="Dependency graph: issue 9 blocks issues 10 and 11 which run in parallel, both block issue 12">
+        <g style="color:var(--rule-2)">
+          <path class="edge" d="M196 92 Q243 92 243 50 H286" marker-end="url(#ah2)"/>
+          <path class="edge" d="M196 92 Q243 92 243 148 H286" marker-end="url(#ah2)"/>
+          <path class="edge" d="M500 50 Q547 50 547 92 H592" marker-end="url(#ah2)"/>
+          <path class="edge" d="M500 148 Q547 148 547 92 H592" marker-end="url(#ah2)"/>
+        </g>
+        <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs>
+
+        <g class="node" style="color:var(--ink-2);cursor:default">
+          <rect class="body" x="26" y="64" width="170" height="56" rx="6" stroke="var(--ink-2)"/>
+          <text class="t" x="42" y="88">#9 password auth</text>
+          <text class="s" x="42" y="105">blocking — run alone, first</text>
+        </g>
+        <g class="node" style="color:var(--progress);cursor:default">
+          <rect class="body" x="286" y="22" width="214" height="56" rx="6" stroke="var(--progress)"/>
+          <text class="t" x="302" y="46">#10</text>
+          <text class="s" x="302" y="63">parallel worktree · test-10-* fixtures</text>
+        </g>
+        <g class="node" style="color:var(--progress);cursor:default">
+          <rect class="body" x="286" y="120" width="214" height="56" rx="6" stroke="var(--progress)"/>
+          <text class="t" x="302" y="144">#11 persist threads</text>
+          <text class="s" x="302" y="161">parallel worktree · test-11-* fixtures</text>
+        </g>
+        <g class="node" style="color:var(--ink-2);cursor:default">
+          <rect class="body" x="592" y="64" width="182" height="56" rx="6" stroke="var(--ink-2)"/>
+          <text class="t" x="608" y="88">#12 sync on login</text>
+          <text class="s" x="608" y="105">waits for both</text>
+        </g>
+      </svg>
+    </div>
+  </div>
+
+  <div class="callout">
+    <p><b>The three rules that make the parallel pair safe.</b> Ticket-tagged fixtures, so #10 and #11 never touch each other's rows in the shared Postgres. Per-agent owned regions in <code>main.py</code>, so the hotspot file has no overlapping writers. And neither agent boots the dev server — port 8080 is shared, so verification goes through pytest only.</p>
+    <p>Concurrency stays capped at two agents until there is real per-agent database isolation.</p>
+  </div>
+</section>
+
+<!-- ============ 9. THIS WEEK ============ -->
+<section id="week">
+  <h2>This week</h2>
+  <p class="sub">The minimum that makes #9–#12 run under FLP. Tick items off as you go; the list remembers itself in this browser.</p>
+
+  <div class="panel pad">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px">
+      <span class="progressline" id="prog">0 / 9 done</span>
+      <div style="display:flex;gap:6px">
+        <button class="btn" id="copyCheck">Copy as markdown</button>
+        <button class="btn" id="clearCheck">Clear</button>
+      </div>
+    </div>
+    <ul class="check" id="checklist">
+      <li><input type="checkbox" id="k1"><label class="txt" for="k1"><b>Score #9–#12 on the readiness rubric</b> and rewrite any issue scoring below 4 on acceptance criteria or context. Highest return, lowest cost — agent-ready tickets averaged 4.47 against 2.72.</label></li>
+      <li><input type="checkbox" id="k2"><label class="txt" for="k2"><b>Freeze the specs in the issue bodies</b> and write acceptance criteria that can fail. If a criterion can't fail under a wrong implementation, it isn't one.</label></li>
+      <li><input type="checkbox" id="k3"><label class="txt" for="k3"><b>Create the five labels:</b> ready-for-agent, agent:in-progress, agent:gate-pending, agent:verified, agent:blocked.</label></li>
+      <li><input type="checkbox" id="k4"><label class="txt" for="k4"><b>Switch to PR-first.</b> Open a draft PR per ticket early; the description carries the checklist, running status, and Closes #N. Draft becomes ready only after the gate passes.</label></li>
+      <li><input type="checkbox" id="k5"><label class="txt" for="k5"><b>Name branches <code>impl/&lt;id&gt;-*</code> and <code>verify/&lt;id&gt;-*</code></b> so independent verification is traceable in the history.</label></li>
+      <li><input type="checkbox" id="k6"><label class="txt" for="k6"><b>Add <code>.loop/</code></b> with <code>INDEX.md</code> and a <code>LOOP.md</code> per active ticket. Put the loop-testing rule in CONVENTIONS.md §7.</label></li>
+      <li><input type="checkbox" id="k7"><label class="txt" for="k7"><b>Draft the two prompts</b> and run the gate by hand for now — pytest, then post the unedited result on the PR. There's no CI yet.</label></li>
+      <li><input type="checkbox" id="k8"><label class="txt" for="k8"><b>Set the budget caps and wire the escalation triggers.</b> These are exactly the blockers already on your signal board.</label></li>
+      <li><input type="checkbox" id="k9"><label class="txt" for="k9"><b>Run #9 first</b>, then #10 and #11 in parallel worktrees with tagged fixtures and owned regions, then #12.</label></li>
+    </ul>
+  </div>
+
+  <h3>The readiness gate, before any agent touches a ticket</h3>
+  <p class="sub" style="margin-bottom:14px">Five dimensions are scored; these two carry most of the measured effect on autonomous success. Both must be ≥4.</p>
+  <div class="tbl rubric"><div class="scroll"><table>
+    <thead><tr><th>Issue</th><th>Acceptance criteria</th><th>Context</th><th>Verdict</th></tr></thead>
+    <tbody id="rubricBody"></tbody>
+  </table></div></div>
+  <p class="note" style="margin-top:10px">Anything marked "rewrite" gets a better issue body before it enters the DAG — not a smarter agent.</p>
+
+  <h3>Deferred until it's bigger</h3>
+  <ul class="plain">
+    <li><b>CI as the deterministic gate floor</b> — add as soon as feasible; this is the cheapest correctness win on the list.</li>
+    <li><b>Webhooks or GitHub Actions triggers</b> — only when merge latency or ticket volume demands it.</li>
+    <li><b>An external DAG store</b> — when concurrent ready-work or cross-repo dependencies outgrow labels.</li>
+    <li><b>Reusable skills extracted from retros</b>, and parallel independent reviewers beyond two agents.</li>
+    <li><b>Real per-agent DB and test isolation</b> — high value, more setup. Prioritize it if race incidents recur.</li>
+  </ul>
+
+  <h3>Six rules to keep</h3>
+  <ol class="plain">
+    <li>Do the rubric rewrite and spec freeze first. Acceptance criteria and context cost nothing but thought and move autonomous success more than anything else.</li>
+    <li>Never let the implementer be the acceptance signal. Stand up the read-only verifier this week.</li>
+    <li>Route cheap to implement, strong to verify, with hard caps at every level. Loop shape is where cost runs away, not model choice.</li>
+    <li>Scale human attention to blast radius, not uniformly. Auto-merge reversible work; gate the irreversible.</li>
+    <li>Close every feature with a short retro that promotes at most a few learnings into the constitution, plus one index row. This is the compounding mechanism.</li>
+    <li>Log the loop-health metrics, so next month's weights come from your data instead of someone's priors.</li>
+  </ol>
+</section>
+
+<!-- ============ 10. BOOTSTRAP ============ -->
+<section id="bootstrap">
+  <h2>Scaffolding it</h2>
+  <p class="sub">One setup pass. It writes structure and stops before touching feature code.</p>
+
+  <div class="callout">
+    <p><b>Run it in a fresh Claude Code session, not the conversation where this was designed.</b> That session is carrying the whole design debate — the alternatives, the scoring, the discarded options — which is exactly the context the protocol exists to throw away. A new session pointed at this page gets the conclusions without the deliberation. It is also the first real test of whether this page is legible to an agent that wasn't there.</p>
+  </div>
+
+  <h3>Check these first</h3>
+  <div class="tbl"><div class="scroll"><table>
+    <thead><tr><th>Check</th><th>Why it matters</th></tr></thead>
+    <tbody>
+      <tr><td><code>gh auth status</code> is green and the token can create labels</td><td>Step 4 fails quietly otherwise, and the state machine has no states</td></tr>
+      <tr><td>Issue bodies for #9–#12 actually contain something</td><td>Thin bodies mean step 2 flags nearly every criterion as un-falsifiable. That is the correct result, and it will feel like failure</td></tr>
+      <tr><td><code>pytest -q</code> passes on a clean checkout <b>right now</b></td><td>A red baseline makes every verifier verdict noise</td></tr>
+      <tr><td>Working tree clean, on a branch you'll happily commit scaffolding to</td><td>Scaffold lands as its own PR, never mixed into feature work</td></tr>
+      <tr><td>Whether <code>CONVENTIONS.md</code> already exists</td><td>§7 should be appended to the existing file, not started in a competing one</td></tr>
+    </tbody>
+  </table></div></div>
+
+  <h3 style="margin-top:30px">The setup prompt</h3>
+  <div class="codeblock">
+    <div class="codehead"><span class="fn">setup prompt — run once, in the repo root</span><button class="btn primary copy">Copy prompt</button></div>
+<pre>Set up the Feature Loop Protocol in this repo. Do NOT write any feature code.
+
+1. Create .loop/ with INDEX.md (table header only) and a short README stating the rule:
+   files are the memory, GitHub labels are the live state, the implementer never accepts
+   its own work.
+2. For each of #9, #10, #11, #12 create .loop/&lt;id&gt;/LOOP.md from the manifest template
+   (front matter: id, title, goal, spec_link, dag.depends_on/blocks, acceptance_criteria,
+   verifier_command, escalation_triggers, budgets, model_routing, state, branches) and an
+   empty journal.md. Read the issue body for each; do not invent acceptance criteria you
+   cannot falsify — flag the gaps instead.
+3. Add CONVENTIONS.md §7 "agent-loop testing": ticket-tagged fixtures test-&lt;id&gt;-*;
+   agents never boot the dev server (port 8080 is shared) and verify via pytest only;
+   the implementer's "tests pass" is never the acceptance signal.
+4. Create the labels: ready-for-agent, agent:in-progress, agent:gate-pending,
+   agent:verified, agent:blocked.
+5. Add .claude/commands/loop.md with the orchestrator prompt, plus subagent definitions
+   .claude/agents/implementer.md and .claude/agents/verifier.md.
+   - Set `model:` in each subagent's own frontmatter (implementer: cheap tier,
+     verifier: strong tier). The model_routing block in LOOP.md is documentation and
+     routes nothing by itself.
+   - Give the verifier read + test-running tools only, no Write/Edit on app/ or tests/.
+   - The verifier must NOT be given .loop/&lt;id&gt;/journal.md. It reads LOOP.md
+     acceptance_criteria, the diff, and the test output. Nothing else.
+6. Add .claude/worktrees/ to .gitignore and a .worktreeinclude that copies .env into
+   each worktree. Do NOT try to copy .venv — it breaks on absolute paths. Add a documented
+   step (or a WorktreeCreate hook) that rebuilds the venv in the worktree instead; if you
+   use a hook, it must copy .env too, because a hook suppresses .worktreeinclude.
+7. Score #9-#12 on the readiness rubric, scoring acceptance criteria and context 1-5 each.
+   List which issues need a rewrite before an agent touches them.
+
+Then STOP and show me: the tree you created, and the rubric scores.</pre>
+  </div>
+</section>
+
+<!-- ============ 11. RUNNING IT ============ -->
+<section id="run">
+  <h2>Running it</h2>
+  <p class="sub">There is no daemon. The loop is a prompt that advances one step and exits, invoked repeatedly — by you at first, by a shell later.</p>
+
+  <h3>Three things the design doesn't enforce on its own</h3>
+  <div class="grid2" style="margin-top:14px">
+    <div class="dcard" style="border-left-color:var(--blocked)">
+      <h4>Discovered while planning the first run</h4>
+      <div class="pick">Model routing in <code>LOOP.md</code> is inert</div>
+      <p>The <code>model_routing</code> block documents intent; nothing reads it. Routing lives in each subagent definition's own frontmatter, and it takes a tier alias — <code>haiku</code>, <code>sonnet</code>, <code>opus</code>, <code>inherit</code> — not a full model string. Set <code>model:</code> there or you get uniform routing and lose the entire cost argument for a cheap implementer while believing you've kept it.</p>
+      <div class="flip">Check it by looking at <b>which model actually ran</b> on the first implementer turn, not at what the manifest says.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--blocked)">
+      <h4>Discovered while planning the first run</h4>
+      <div class="pick">A summarised verdict is a paraphrased one</div>
+      <p>Subagents run in their own context and hand the parent back only a summary. Route the verdict through the orchestrator and it arrives compressed — which is exactly the "mostly passing" failure the verifier prompt forbids. The verifier posts to the PR itself with <code>gh</code>, which means it needs Bash, which is why the empty-diff check is the boundary that actually holds.</p>
+      <div class="flip">Same class of problem: the implementer's branch. <code>--worktree</code> creates branches named <code>worktree-*</code> under <code>.claude/worktrees/</code>, and subagent worktrees are temporary — <b>nothing lands you on <code>impl/&lt;id&gt;-*</code></b> unless the orchestrator creates it.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--blocked)">
+      <h4>Discovered while planning the first run</h4>
+      <div class="pick">"Read-only verifier" is a soft boundary</div>
+      <p>Restricting the subagent's tools helps, but anything with a shell can write files regardless. The enforcement that actually holds is structural: the verifier works on <code>verify/&lt;id&gt;-*</code>, and that branch must show an empty diff against the implementer's.</p>
+      <div class="flip">A verifier that <b>edited anything</b> has invalidated its own verdict. Diff the branch before trusting a PASS.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--blocked)">
+      <h4>Discovered while planning the first run</h4>
+      <div class="pick">The verifier must not read <code>journal.md</code></div>
+      <p>The journal is the implementer's account of what it built and why it believes it works. Handing that to the verifier smuggles self-report back through the side door — the exact thing L3 exists to remove. The verifier gets acceptance criteria, the diff, and the test runner.</p>
+      <div class="flip">If a verdict ever cites <b>reasoning the implementer wrote</b>, the gate has already leaked.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--ink-3)">
+      <h4>Scope discipline</h4>
+      <div class="pick">Timebox the scaffold to half a day</div>
+      <p>The real failure mode this week isn't a bad loop — it's spending the week building the protocol instead of shipping #9–#12. If step 2 comes back saying most criteria can't be falsified, that <em>is</em> the week's finding, and rewriting four issue bodies beats any amount of loop tuning.</p>
+      <div class="flip">Protocol work that outgrows <b>half a day</b> before #9 ships is over-engineering.</div>
+    </div>
+  </div>
+
+  <h3>First run, in order</h3>
+  <div class="tbl"><div class="scroll"><table>
+    <thead><tr><th style="width:38px">#</th><th>Do</th><th>What you're actually testing</th></tr></thead>
+    <tbody>
+      <tr><td><b>1</b></td><td>Run the setup prompt. Commit the scaffold as its own PR, then read every generated <code>LOOP.md</code> yourself.</td><td>The acceptance criteria. They are the entire product of this step.</td></tr>
+      <tr><td><b>2</b></td><td>Fix the issues that failed the rubric. Human work. Nothing proceeds until #9 scores 4 and 4.</td><td>Whether the spec is falsifiable — the highest-return control in the plan.</td></tr>
+      <tr><td><b>3</b></td><td>Dry-run <code>/loop</code> with no labels set. It should print <code>NO-OP</code> and stop.</td><td>Idempotency. Better to find it broken now than mid-feature.</td></tr>
+      <tr><td><b>4</b></td><td>Label #9 <span class="chip c-ready">ready-for-agent</span> and drive one full cycle by hand: spawn implementer, set label, spawn verifier, read the raw verdict, merge.</td><td>The prompts, not the feature. You are the orchestrator for this one lap.</td></tr>
+      <tr><td><b>5</b></td><td>Hand the wheel to <code>/loop</code> — still one tick at a time — for #10 and #11 in parallel worktrees.</td><td>Whether worktrees, tagged fixtures and the shared Postgres behave with two agents live.</td></tr>
+      <tr><td><b>6</b></td><td>Only after a clean feature end-to-end, consider a restart wrapper: <code>while :; do claude -p "$(cat .claude/commands/loop.md)"; done</code></td><td>Nothing. This is the Ralph form and it only earns trust after a supervised lap.</td></tr>
+    </tbody>
+  </table></div></div>
+  <p class="note" style="margin-top:10px">#9 runs alone not only because it blocks the others, but because it is the rehearsal — parallelism is the last thing to switch on, not the first.</p>
+
+  <h3>What actually pays this week</h3>
+  <div class="callout">
+    <p><b>Two controls carry almost all the value:</b> falsifiable acceptance criteria, and the independent verifier. Build only those and skip everything else, and you'd capture most of the benefit by Friday.</p>
+    <p><b>The ledger compounds on a longer clock.</b> Retros, the index, promoted learnings — that machinery pays back over roughly five to ten features, not four. It will feel like overhead while you build it, and it won't repay inside this week. Keep it anyway, because retrofitting memory onto a running workflow is far worse than starting with it. But write the shortest version that works: a retro that takes twenty minutes will stop being written by feature three.</p>
+  </div>
+</section>
+
+<footer>
+  Feature Loop Protocol — derived from the FLP design document for rag-engine #9–#12. Revised after a first pass over the setup prompt: preflight checks, the three enforcement gaps, and the first-run order are in <a href="#bootstrap">Scaffolding it</a> and <a href="#run">Running it</a>. Everything on this page is one self-contained HTML file.
+</footer>
+
+</main>
+</div>
+
+<div class="toast" id="toast">Copied</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ---------- toast ---------- */
+  var toastEl = document.getElementById('toast'), toastT;
+  function toast(msg){
+    toastEl.textContent = msg || 'Copied';
+    toastEl.classList.add('show');
+    clearTimeout(toastT);
+    toastT = setTimeout(function(){ toastEl.classList.remove('show'); }, 1400);
+  }
+  function copyText(text){
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){ toast('Copied'); },
+        function(){ fallback(text); });
+    } else { fallback(text); }
+  }
+  function fallback(text){
+    try{
+      var ta=document.createElement('textarea');
+      ta.value=text; ta.style.position='fixed'; ta.style.opacity='0';
+      document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+      document.body.removeChild(ta); toast('Copied');
+    }catch(e){ toast('Select and copy manually'); }
+  }
+  document.addEventListener('click', function(e){
+    var b = e.target.closest('.copy');
+    if(!b) return;
+    var pre = b.closest('.codeblock').querySelector('pre');
+    copyText(pre.textContent);
+  });
+
+  /* ---------- state machine ---------- */
+  var STATES = {
+    ready: {
+      label:'ready-for-agent', cls:'c-ready', title:'Ready for an agent',
+      rows:[
+        ['Means','Every <b>depends_on</b> is merged, the spec is frozen in the issue body, and the acceptance criteria can fail.'],
+        ['Who acts','The orchestrator. It writes no feature code.'],
+        ['It does','Opens a draft PR, cuts <code>impl/&lt;id&gt;-*</code>, and spawns the implementer on the cheap model inside its own worktree.'],
+        ['Leaves when','The implementer has started. One step per tick, then exit.'],
+        ['Writes','<code>LOOP.md</code> manifest, the draft PR, a journal entry.']
+      ]},
+    prog: {
+      label:'agent:in-progress', cls:'c-prog', title:'Implementer working',
+      rows:[
+        ['Means','A cheap-model implementer is building one feature in a fresh context.'],
+        ['Who acts','Implementer. Owned regions only.'],
+        ['It does','Touches only its regions, uses <code>test-&lt;id&gt;-*</code> fixtures, never boots the dev server (port 8080 is shared), appends to <code>journal.md</code>.'],
+        ['Leaves when','One feature is done, <b>every</b> self-test is green, and it is committed — only then does it set the gate label. A known-red criterion never goes up.'],
+        ['Careful','Its green tests are a <b>signal to verify</b>, never an acceptance.']
+      ]},
+    gate: {
+      label:'agent:gate-pending', cls:'c-gate', title:'At the verification gate',
+      rows:[
+        ['Means','The implementer claims done. Nothing is accepted yet.'],
+        ['Who acts','A separate strong-model verifier with no Write or Edit access to <code>app/</code> or <code>tests/</code>, on branch <code>verify/&lt;id&gt;-*</code>.'],
+        ['It does','Runs <code>verifier_command</code> and each criterion\u2019s own steps. Passes a criterion only with evidence it can point to.'],
+        ['Leaves when','PASS on every criterion, or NEEDS_WORK.'],
+        ['On failure','The raw failing output — unparaphrased — becomes the implementer\u2019s next prompt.']
+      ]},
+    ver: {
+      label:'agent:verified', cls:'c-ver', title:'Verified, awaiting merge',
+      rows:[
+        ['Means','Every criterion passed with evidence posted on the PR, which is now marked ready.'],
+        ['Who acts','A human for anything with blast radius; automatic for low-risk reversible changes.'],
+        ['Always human','Schema and migrations, anything irreversible, anything touching security.'],
+        ['Leaves when','The PR merges.'],
+        ['Then','Merge fires the DAG re-evaluation.']
+      ]},
+    merged: {
+      label:'merged', cls:'', title:'Merged — the compounding step',
+      rows:[
+        ['Means','The feature is in. This is the only moment the graph moves.'],
+        ['Triggered here','Every issue whose <b>depends_on</b> are now all merged gets <code>ready-for-agent</code>. Resolution fires on merge, never on agent exit.'],
+        ['Write now','<code>retro.md</code>, a new row in <code>INDEX.md</code>, and the checked learnings promoted into <code>CONVENTIONS.md</code>.'],
+        ['Supersede','Older guidance the retro contradicts gets marked superseded, so stale rules don\u2019t pile up.'],
+        ['Result','The next agent starts smarter without reading a single transcript.']
+      ]},
+    blocked: {
+      label:'agent:blocked', cls:'c-blk', title:'Stopped for a human',
+      rows:[
+        ['Reached by','Any escalation trigger firing, or any budget cap being hit.'],
+        ['Typical triggers','A migration touching an existing table; the verifier failing three times on the same criterion; any edit outside owned scope.'],
+        ['Budget caps','8 iterations, 3 verify rounds, ~400k tokens, 2 hours.'],
+        ['The loop does','Writes the reason to <code>journal.md</code>, sets the label, and stops. It does not retry around a tripwire.'],
+        ['Reads as','Three failures on one criterion usually means the <b>spec</b> is wrong, not the code.']
+      ]}
+  };
+  var detail = document.getElementById('stateDetail');
+  function renderState(k){
+    var s = STATES[k];
+    var html = '<div class="head"><h4>'+s.title+'</h4>'+
+      (s.cls? '<span class="chip '+s.cls+'">'+s.label+'</span>' : '<span class="chip" style="border-color:var(--rule-2);color:var(--ink-2)">'+s.label+'</span>')+
+      '</div><dl>';
+    s.rows.forEach(function(r){ html += '<dt>'+r[0]+'</dt><dd>'+r[1]+'</dd>'; });
+    detail.innerHTML = html + '</dl>';
+  }
+  function selectNode(g){
+    document.querySelectorAll('.node[data-k]').forEach(function(n){ n.classList.remove('sel'); });
+    g.classList.add('sel');
+    renderState(g.getAttribute('data-k'));
+  }
+  document.querySelectorAll('.node[data-k]').forEach(function(g){
+    g.addEventListener('click', function(){ selectNode(g); });
+    g.addEventListener('keydown', function(e){
+      if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); selectNode(g); }
+    });
+  });
+  renderState('ready');
+
+  /* ---------- template tabs ---------- */
+  document.getElementById('tmplTabs').addEventListener('click', function(e){
+    var t = e.target.closest('.tab'); if(!t) return;
+    this.querySelectorAll('.tab').forEach(function(x){ x.setAttribute('aria-selected','false'); });
+    t.setAttribute('aria-selected','true');
+    document.querySelectorAll('.codeblock[data-p]').forEach(function(c){
+      c.hidden = (c.getAttribute('data-p') !== t.getAttribute('data-t'));
+    });
+  });
+
+  /* ---------- tradeoff explorer ---------- */
+  var CRIT = [
+    {k:'corr',  n:'Correctness / verification', w:22},
+    {k:'leg',   n:'Cross-agent legibility',     w:16},
+    {k:'dur',   n:'Durability & auditability',  w:14},
+    {k:'hum',   n:'Human attention',            w:13},
+    {k:'cost',  n:'Token / cost efficiency',    w:12},
+    {k:'rev',   n:'Reversibility / blast radius',w:10},
+    {k:'setup', n:'Setup & maintenance',        w:8},
+    {k:'scale', n:'Scalability past 4 tickets', w:5}
+  ];
+  var OPTS = [
+    {n:'In-repo files', s:[4,5,5,4,4,4,4,3], note:'Travels with git, diffs, reads cold from a fresh context.'},
+    {n:'PR / issue comments', s:[3,3,3,3,4,4,5,3], note:'Zero setup, but it is not a cold read and it is not durable.'},
+    {n:'External store (Beads / agent-queue)', s:[4,4,5,3,3,4,2,5], note:'Wins once work spans repos or ready-work outgrows labels.'},
+    {n:'In-repo primary + labels & PRs as live state', s:[5,5,5,4,4,4,3,4], note:'Chosen. Files are memory; labels are the state machine; PR comments are the audit trail.', doc:true}
+  ];
+  var wBox = document.getElementById('weights'), oBox = document.getElementById('options');
+  CRIT.forEach(function(c){
+    var d = document.createElement('div'); d.className = 'wrow';
+    d.innerHTML = '<div class="lab"><span>'+c.n+'</span><span id="v-'+c.k+'"></span></div>'+
+      '<input type="range" min="0" max="40" step="1" value="'+c.w+'" data-k="'+c.k+'" aria-label="Weight for '+c.n+'">';
+    wBox.appendChild(d);
+  });
+  function compute(){
+    var vals = CRIT.map(function(c){
+      return +wBox.querySelector('input[data-k="'+c.k+'"]').value;
+    });
+    var sum = vals.reduce(function(a,b){ return a+b; }, 0) || 1;
+    CRIT.forEach(function(c,i){
+      document.getElementById('v-'+c.k).textContent = (vals[i]/sum).toFixed(2);
+    });
+    var totals = OPTS.map(function(o){
+      var t = 0;
+      for(var i=0;i<CRIT.length;i++){ t += (vals[i]/sum) * o.s[i]; }
+      return t;
+    });
+    var best = totals.indexOf(Math.max.apply(null, totals));
+    oBox.innerHTML = OPTS.map(function(o,i){
+      return '<div class="optrow'+(i===best?' win':'')+'">'+
+        '<div class="top"><span class="nm">'+o.n+(o.doc?'<span class="badge">design pick</span>':'')+'</span>'+
+        '<span class="sc">'+totals[i].toFixed(2)+'</span></div>'+
+        '<div class="bar"><i style="width:'+(totals[i]/5*100).toFixed(1)+'%"></i></div>'+
+        '<div class="note">'+o.note+'</div></div>';
+    }).join('');
+    var scaleW = vals[7]/sum;
+    var sens = document.getElementById('sens');
+    if(best === 2){
+      sens.innerHTML = 'At these weights the <b>external store</b> takes it — scalability is now carrying '+(scaleW*100).toFixed(0)+'% of the decision. That is the documented flip point: once work spans repos or ready-work outgrows labels, adopt it.';
+    } else if(best === 3){
+      sens.innerHTML = 'The hybrid holds. It only loses when scalability climbs past roughly 0.20 — currently '+scaleW.toFixed(2)+'.';
+    } else {
+      sens.innerHTML = 'These weights favour <b>'+OPTS[best].n+'</b>. Worth asking whether correctness and legibility are really this cheap.';
+    }
+  }
+  wBox.addEventListener('input', compute);
+  document.getElementById('resetW').addEventListener('click', function(){
+    CRIT.forEach(function(c){ wBox.querySelector('input[data-k="'+c.k+'"]').value = c.w; });
+    compute();
+  });
+  compute();
+
+  /* ---------- checklist (per-browser convenience) ---------- */
+  var KEY = 'flp.checklist.v1';
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('#checklist input'));
+  function saveCheck(){
+    try{ localStorage.setItem(KEY, JSON.stringify(boxes.map(function(b){ return b.checked; }))); }catch(e){}
+  }
+  function loadCheck(){
+    try{
+      var raw = localStorage.getItem(KEY);
+      if(!raw) return;
+      var v = JSON.parse(raw);
+      if(Array.isArray(v)) boxes.forEach(function(b,i){ b.checked = !!v[i]; });
+    }catch(e){}
+  }
+  function updateProg(){
+    var d = boxes.filter(function(b){ return b.checked; }).length;
+    document.getElementById('prog').textContent = d + ' / ' + boxes.length + ' done';
+  }
+  loadCheck(); updateProg();
+  boxes.forEach(function(b){ b.addEventListener('change', function(){ saveCheck(); updateProg(); }); });
+  document.getElementById('clearCheck').addEventListener('click', function(){
+    boxes.forEach(function(b){ b.checked = false; });
+    saveCheck(); updateProg(); toast('Cleared');
+  });
+  document.getElementById('copyCheck').addEventListener('click', function(){
+    var lines = ['## Feature Loop Protocol — this week',''];
+    boxes.forEach(function(b){
+      var label = document.querySelector('label[for="'+b.id+'"]');
+      lines.push('- [' + (b.checked?'x':' ') + '] ' + label.textContent.replace(/\s+/g,' ').trim());
+    });
+    copyText(lines.join('\n'));
+  });
+
+  /* ---------- readiness rubric ---------- */
+  var ISSUES = [
+    {id:'#9',  t:'password auth'},
+    {id:'#10', t:'independent feature'},
+    {id:'#11', t:'persist chat threads'},
+    {id:'#12', t:'sync threads on login'}
+  ];
+  var RKEY = 'flp.rubric.v1';
+  var rBody = document.getElementById('rubricBody');
+  function sel(id, dim, val){
+    var o = '';
+    for(var i=1;i<=5;i++){ o += '<option value="'+i+'"'+(i===val?' selected':'')+'>'+i+'</option>'; }
+    return '<select data-i="'+id+'" data-d="'+dim+'" aria-label="'+dim+' score for '+id+'">'+o+'</select>';
+  }
+  var rState = {};
+  try{ rState = JSON.parse(localStorage.getItem(RKEY) || '{}') || {}; }catch(e){ rState = {}; }
+  rBody.innerHTML = ISSUES.map(function(is){
+    var a = (rState[is.id] && rState[is.id].ac) || 3;
+    var c = (rState[is.id] && rState[is.id].ctx) || 3;
+    return '<tr><td><b>'+is.id+'</b> '+is.t+'</td><td>'+sel(is.id,'ac',a)+'</td><td>'+sel(is.id,'ctx',c)+
+      '</td><td id="rv-'+is.id.slice(1)+'"></td></tr>';
+  }).join('');
+  function rubric(){
+    var out = {};
+    ISSUES.forEach(function(is){
+      var a = +rBody.querySelector('select[data-i="'+is.id+'"][data-d="ac"]').value;
+      var c = +rBody.querySelector('select[data-i="'+is.id+'"][data-d="ctx"]').value;
+      out[is.id] = {ac:a, ctx:c};
+      var pass = (a >= 4 && c >= 4);
+      document.getElementById('rv-'+is.id.slice(1)).innerHTML =
+        '<span class="verdict '+(pass?'v-pass':'v-fail')+'">'+(pass?'enters the DAG':'rewrite the issue')+'</span>';
+    });
+    try{ localStorage.setItem(RKEY, JSON.stringify(out)); }catch(e){}
+  }
+  rBody.addEventListener('change', rubric);
+  rubric();
+
+  /* ---------- nav highlight ---------- */
+  var links = Array.prototype.slice.call(document.querySelectorAll('nav a'));
+  var secs = links.map(function(a){ return document.querySelector(a.getAttribute('href')); }).filter(Boolean);
+  if('IntersectionObserver' in window){
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){
+        if(!en.isIntersecting) return;
+        links.forEach(function(a){ a.classList.toggle('on', a.getAttribute('href') === '#'+en.target.id); });
+      });
+    }, {rootMargin:'-20% 0px -70% 0px'});
+    secs.forEach(function(s){ io.observe(s); });
+  }
+})();
+</script>
+</body>
+</html>
