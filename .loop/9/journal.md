@@ -138,3 +138,73 @@ Approvals recorded (given explicitly by the user in chat, not self-granted):
   original round — approved.
 
 Full suite green after fix: `PYTHONPATH=. uv run pytest -q` → 106 passed.
+
+## 2026-09-18T01:49:35-04:00 — verify round 2: NEEDS_WORK, two findings
+
+Verifier round 2 returned NEEDS_WORK with two findings. Handled separately,
+per the user's explicit instructions on which was real:
+
+**Finding 1 — tests/test_config.py regression: stale-branch artifact, not a
+live regression.** The verifier gated `verify/9-password-auth` @ `cc65bb1`,
+one commit behind `impl/9-password-auth` — it predated `d6f2bce` (the round-1
+fix above, logged in this same file). `verify/9-password-auth` has since
+been fast-forwarded to `d6f2bce` by the user. No code change made for this
+finding; confirmed by re-reading `git show d6f2bce -- tests/test_config.py`
+(the fix is there) and `git branch --all --contains d6f2bce` (both `impl/`
+and, after the fast-forward, `verify/9-password-auth` contain it).
+
+**Finding 2 — flaky tamper test, real, fixed.**
+`tests/test_auth.py::test_verify_session_cookie_rejects_tampered_value`
+mutated the token's last base64url character
+(`token[:-1] + ("a" if token[-1] != "a" else "b")`). Root cause per the
+verifier: itsdangerous base64url-encodes the raw HMAC digest, and the last
+character of a base64 group can carry "slack" bits that don't correspond to
+real digest bytes — flipping only that character decodes back to an
+*identical* byte string roughly 1 time in 4, so the test asserted
+`verify_session_cookie(...) is None` against a signature that was, bit for
+bit, still valid. That's a nondeterministic test, not a bug in
+`app/auth.py` — confirmed by the verifier decoding both signatures
+byte-for-byte and finding them equal on a failing run.
+
+Fix (`tests/test_auth.py` only — `app/auth.py` not touched, assertion not
+weakened): added `_flip_a_real_bit()`, which base64url-decodes the token's
+signature segment, XORs a real bit in the first decoded byte, and
+re-encodes. An XOR always changes the byte value, so the re-signed digest
+is guaranteed invalid on every run — no reliance on which base64 group
+boundary the last character happens to fall on. The test now also asserts
+`tampered != token` before checking rejection, so a would-be no-op mutation
+fails loudly instead of silently passing.
+
+Evidence — the exact command from the verifier's instructions, run 10
+times back to back, nothing else changed between runs:
+```
+PYTHONPATH=. uv run pytest -q tests/test_auth.py
+run 1:  21 passed in 1.31s
+run 2:  21 passed in 1.32s
+run 3:  21 passed in 1.29s
+run 4:  21 passed in 1.29s
+run 5:  21 passed in 1.26s
+run 6:  21 passed in 1.27s
+run 7:  21 passed in 1.28s
+run 8:  21 passed in 1.29s
+run 9:  21 passed in 1.27s
+run 10: 21 passed in 1.25s
+```
+**10 for 10.** No leftover `test-9-*` rows in the dev Postgres after the
+run.
+
+### Acceptance criteria status (unchanged from round 1, criterion 4 now
+solid rather than "PASS but the dedicated tamper test is flaky")
+1. signup → users + auth_identities (argon2id) — GREEN
+2. login verifies password, sets signed cookie — GREEN
+3. logout clears cookie — GREEN
+4. get_current_user_optional never raises, None for anon/invalid/expired — GREEN (tamper-rejection now deterministic, 10/10)
+5. anonymous chat unaffected — GREEN
+6. APP_ENV/SECRET_KEY, ConfigError on missing SECRET_KEY — GREEN
+
+### What's next
+Nothing red, ten consecutive clean runs recorded above. Setting
+`agent:gate-pending` on issue #9 now, per "Set agent:gate-pending only after
+ten clean consecutive runs." Not opening a PR, not running the verifier, not
+labeling `agent:verified` — per the user's explicit instructions, those
+stay driven by hand.

@@ -11,6 +11,7 @@ pattern so /signup, /login, /logout, /me run on the same event loop as the
 AuthStore's asyncpg pool.
 """
 
+import base64
 import os
 
 import asyncpg
@@ -124,11 +125,28 @@ def test_verify_session_cookie_roundtrip():
     assert verify_session_cookie(_SECRET_KEY, token) == 42
 
 
+def _flip_a_real_bit(b64url_segment: str) -> str:
+    """Decodes a base64url (unpadded) itsdangerous token segment, flips one
+    bit in its first decoded byte, and re-encodes. Unlike mutating a
+    character in the encoded text directly — which can land on a base64
+    "slack" bit that decodes back to the *same* byte roughly 1 time in 4
+    (itsdangerous's digest is base64-encoded, and not every encoded bit
+    maps to real digest data) — this is guaranteed to change the decoded
+    bytes every time, so the resulting signature is guaranteed invalid."""
+    padded = b64url_segment + "=" * (-len(b64url_segment) % 4)
+    raw = bytearray(base64.urlsafe_b64decode(padded))
+    raw[0] ^= 0x01
+    return base64.urlsafe_b64encode(bytes(raw)).decode("ascii").rstrip("=")
+
+
 def test_verify_session_cookie_rejects_tampered_value():
     from app.auth import sign_session_cookie
 
     token = sign_session_cookie(_SECRET_KEY, 42)
-    tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
+    payload, timestamp, signature = token.split(".")
+    tampered = ".".join([payload, timestamp, _flip_a_real_bit(signature)])
+
+    assert tampered != token
     assert verify_session_cookie(_SECRET_KEY, tampered) is None
 
 
