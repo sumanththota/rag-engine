@@ -1,0 +1,711 @@
+<meta charset="utf-8">
+<title>Synthetic Data: 35 → 100</title>
+<style>
+  :root{
+    --ink:#14181f; --bg:#eef1f4; --surface:#ffffff; --surface-2:#f6f8fa;
+    --border:#d7dce2; --muted:#5b6472; --accent:#2a6f77; --accent-soft:#e3eeee;
+    --fail:#c1432b; --fail-soft:#fbe8e3; --pass:#3f7d4f; --pass-soft:#e7f2e9;
+    --warn:#b8862e; --warn-soft:#f6ecd9; --code-bg:#f1f4f7;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ink:#e8ecf1; --bg:#12161c; --surface:#1a1f27; --surface-2:#1f252e;
+      --border:#2c333d; --muted:#93a0b1; --accent:#5fb8bf; --accent-soft:#1c3236;
+      --fail:#e07156; --fail-soft:#3a2420; --pass:#7bc290; --pass-soft:#1f3226;
+      --warn:#e0b45c; --warn-soft:#3a2f18; --code-bg:#151a20;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ink:#e8ecf1; --bg:#12161c; --surface:#1a1f27; --surface-2:#1f252e;
+    --border:#2c333d; --muted:#93a0b1; --accent:#5fb8bf; --accent-soft:#1c3236;
+    --fail:#e07156; --fail-soft:#3a2420; --pass:#7bc290; --pass-soft:#1f3226;
+    --warn:#e0b45c; --warn-soft:#3a2f18; --code-bg:#151a20;
+  }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--bg); color:var(--ink); margin:0;
+    font-family:"IBM Plex Sans",system-ui,sans-serif;
+    padding:0 16px; padding-block:32px;
+  }
+  .wrap{max-width:960px; margin:0 auto; display:flex; flex-direction:column; gap:40px;}
+  code, .mono{font-family:"IBM Plex Mono",ui-monospace,monospace;}
+
+  h1{font-size:1.9rem; margin:0 0 6px; text-wrap:balance; letter-spacing:-0.01em;}
+  h2{font-size:1.15rem; margin:0 0 4px; letter-spacing:-0.005em;}
+  h2 .num{font-family:"IBM Plex Mono",monospace; color:var(--accent); font-weight:600; margin-right:8px;}
+  .lede{color:var(--muted); margin:0; max-width:68ch; line-height:1.55;}
+  .kicker{
+    font-family:"IBM Plex Mono",monospace; text-transform:uppercase; letter-spacing:.08em;
+    font-size:.72rem; color:var(--accent); margin:0 0 10px;
+  }
+
+  header.page{display:flex; flex-direction:column; gap:14px;}
+  .stat-bar{display:flex; flex-wrap:wrap; gap:10px; margin-top:6px;}
+  .stat{
+    background:var(--surface); border:1px solid var(--border); border-radius:8px;
+    padding:10px 14px; display:flex; flex-direction:column; gap:2px; min-width:108px;
+  }
+  .stat .v{font-family:"IBM Plex Mono",monospace; font-size:1.35rem; font-weight:600; font-variant-numeric:tabular-nums;}
+  .stat .l{font-size:.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em;}
+  .stat.fail .v{color:var(--fail)}
+  .stat.pass .v{color:var(--pass)}
+  .stat.warn .v{color:var(--warn)}
+
+  section{display:flex; flex-direction:column; gap:14px;}
+
+  figure{margin:0; display:flex; flex-direction:column; gap:8px;}
+  .diagram-card{
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:16px; overflow-x:auto;
+  }
+  svg{display:block; width:100%; height:auto; max-width:100%;}
+  figcaption{font-size:.82rem; color:var(--muted); line-height:1.5;}
+
+  .table-wrap{overflow-x:auto; border:1px solid var(--border); border-radius:12px; background:var(--surface);}
+  table{border-collapse:collapse; width:100%; min-width:640px; font-size:.86rem;}
+  th, td{text-align:left; padding:10px 14px; border-bottom:1px solid var(--border); vertical-align:top; line-height:1.45;}
+  thead th{
+    background:var(--surface-2); font-family:"IBM Plex Mono",monospace; font-size:.72rem;
+    text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:600;
+    position:sticky; top:0;
+  }
+  tbody tr:last-child td{border-bottom:none;}
+  td.row-label{font-weight:600; white-space:nowrap;}
+  td.us{background:var(--accent-soft);}
+
+  .ladder{display:flex; flex-direction:column; gap:10px;}
+  .finding{
+    background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    padding:14px 16px; display:grid; grid-template-columns:1fr auto; gap:8px 16px; align-items:start;
+  }
+  .finding .title{font-weight:600; font-size:.95rem;}
+  .finding .desc{grid-column:1/-1; font-size:.85rem; color:var(--muted); line-height:1.5; margin:0;}
+  .chips{display:flex; gap:6px; flex-wrap:wrap; justify-self:end;}
+  .chip{
+    font-family:"IBM Plex Mono",monospace; font-size:.68rem; text-transform:uppercase; letter-spacing:.04em;
+    padding:3px 8px; border-radius:100px; border:1px solid transparent; white-space:nowrap;
+  }
+  .chip.stage{background:var(--surface-2); border-color:var(--border); color:var(--muted);}
+  .chip.tier-code{background:var(--pass-soft); color:var(--pass);}
+  .chip.tier-model{background:var(--warn-soft); color:var(--warn);}
+  .chip.tier-none{background:var(--surface-2); color:var(--muted); border-color:var(--border);}
+  .chip.freq{background:var(--fail-soft); color:var(--fail);}
+  .chip.freq.low{background:var(--surface-2); color:var(--muted); border-color:var(--border);}
+  .chip.fixed{background:var(--pass-soft); color:var(--pass); border-color:var(--pass);}
+  .chip.gap{background:var(--warn-soft); color:var(--warn); border-color:var(--warn);}
+
+  .callout{
+    border:1px solid var(--warn); background:var(--warn-soft); border-radius:10px;
+    padding:14px 16px; font-size:.88rem; line-height:1.55;
+  }
+  .callout strong{color:var(--ink);}
+  .callout.accent{border-color:var(--accent); background:var(--accent-soft);}
+
+  ol.roadmap{margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:12px; counter-reset:step;}
+  ol.roadmap li{
+    counter-increment:step; display:grid; grid-template-columns:32px 1fr; gap:12px;
+    background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 16px;
+  }
+  ol.roadmap li::before{
+    content:counter(step); font-family:"IBM Plex Mono",monospace; font-weight:600;
+    color:var(--accent); background:var(--accent-soft); border-radius:6px;
+    display:flex; align-items:center; justify-content:center; height:26px; font-size:.85rem;
+  }
+  ol.roadmap .step-title{font-weight:600; margin:0 0 4px; font-size:.92rem;}
+  ol.roadmap .step-why{margin:0; color:var(--muted); font-size:.85rem; line-height:1.5;}
+  ol.roadmap .skipped{opacity:.6}
+  ol.roadmap .skipped .step-title::after{
+    content:"deferred by request — not now"; font-family:"IBM Plex Mono",monospace; text-transform:none;
+    font-size:.68rem; color:var(--muted); font-weight:400; margin-left:8px;
+  }
+
+  /* comparison cards */
+  .cardgrid{display:grid; grid-template-columns:1fr 1fr; gap:14px;}
+  .card{background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:16px; display:flex; flex-direction:column; gap:8px;}
+  .card h3{margin:0; font-size:.95rem;}
+  .card .tag{font-family:"IBM Plex Mono",monospace; font-size:.68rem; text-transform:uppercase; letter-spacing:.05em; color:var(--accent);}
+  .card p{margin:0; font-size:.84rem; color:var(--muted); line-height:1.5;}
+  .card ul{margin:0; padding-left:18px; font-size:.83rem; color:var(--muted); line-height:1.6;}
+
+  /* timeline */
+  .timeline{display:flex; flex-direction:column; border-left:2px solid var(--border); margin-left:8px; padding-left:20px; gap:20px;}
+  .tl-item{position:relative;}
+  .tl-item::before{
+    content:""; position:absolute; left:-26px; top:4px; width:11px; height:11px; border-radius:50%;
+    background:var(--surface); border:2px solid var(--accent);
+  }
+  .tl-item.fail::before{border-color:var(--fail);}
+  .tl-item.pass::before{border-color:var(--pass);}
+  .tl-year{font-family:"IBM Plex Mono",monospace; font-size:.72rem; color:var(--accent); font-weight:600;}
+  .tl-item.fail .tl-year{color:var(--fail);}
+  .tl-item.pass .tl-year{color:var(--pass);}
+  .tl-title{font-weight:600; font-size:.9rem; margin:2px 0 3px;}
+  .tl-desc{font-size:.83rem; color:var(--muted); line-height:1.5; max-width:64ch;}
+
+  /* builder */
+  .builder{background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:18px; display:flex; flex-direction:column; gap:16px;}
+  .dim-grid{display:grid; grid-template-columns:repeat(auto-fit, minmax(170px,1fr)); gap:10px;}
+  .dim-field{display:flex; flex-direction:column; gap:4px;}
+  .dim-field label{font-family:"IBM Plex Mono",monospace; font-size:.68rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted);}
+  .dim-field select{
+    font-family:"IBM Plex Sans",sans-serif; font-size:.84rem; padding:7px 8px; border-radius:6px;
+    border:1px solid var(--border); background:var(--surface-2); color:var(--ink);
+  }
+  .builder-preview{
+    background:var(--code-bg); border:1px solid var(--border); border-radius:8px; padding:12px 14px;
+    font-family:"IBM Plex Mono",monospace; font-size:.82rem; line-height:1.5; color:var(--ink);
+  }
+  .builder-actions{display:flex; gap:8px; flex-wrap:wrap; align-items:center;}
+  button{
+    font-family:"IBM Plex Sans",sans-serif; font-size:.82rem; font-weight:600; cursor:pointer;
+    border-radius:7px; padding:8px 14px; border:1px solid var(--border); background:var(--surface-2); color:var(--ink);
+  }
+  button.primary{background:var(--accent); border-color:var(--accent); color:#fff;}
+  button:hover{filter:brightness(0.97);}
+  button:disabled{opacity:.5; cursor:not-allowed;}
+  .progress-wrap{display:flex; flex-direction:column; gap:6px;}
+  .progress-track{height:10px; border-radius:6px; background:var(--surface-2); border:1px solid var(--border); overflow:hidden;}
+  .progress-fill{height:100%; background:var(--accent); transition:width .25s ease; width:35%;}
+  .progress-label{font-size:.78rem; color:var(--muted); font-family:"IBM Plex Mono",monospace;}
+  .queue-wrap{overflow-x:auto; border:1px solid var(--border); border-radius:8px; max-height:260px; overflow-y:auto;}
+  .queue-wrap table{min-width:520px; font-size:.8rem;}
+  .queue-wrap td, .queue-wrap th{padding:7px 10px;}
+  .queue-empty{padding:16px; text-align:center; color:var(--muted); font-size:.82rem;}
+  .del-btn{background:none; border:none; color:var(--fail); font-family:"IBM Plex Mono",monospace; padding:2px 6px; font-weight:700;}
+  .copy-feedback{font-size:.78rem; color:var(--pass); font-family:"IBM Plex Mono",monospace; opacity:0; transition:opacity .2s;}
+  .copy-feedback.show{opacity:1;}
+
+  footer{color:var(--muted); font-size:.78rem; border-top:1px solid var(--border); padding-top:16px;}
+
+  @media (max-width:640px){
+    .finding{grid-template-columns:1fr;}
+    .chips{justify-self:start;}
+    .cardgrid{grid-template-columns:1fr;}
+  }
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<div class="wrap">
+
+  <header class="page">
+    <p class="kicker">rag-engine · docs/evals — synthetic data research</p>
+    <h1>Synthetic Data for Evals: Closing the 35 → 100 Trace Gap</h1>
+    <p class="lede">
+      The <span class="mono">eval-pipeline-autopsy</span> flagged this directly: 35 traces is
+      about a third of Hamel Husain's ~100-trace "working pool" needed before trusting a
+      taxonomy's category counts. This is the research behind step 4 of that roadmap — how
+      synthetic data is actually produced for evals, what the tool market around it looks like,
+      and a concrete way to generate the next 65 traces for <em>this</em> handbook bot rather
+      than generic ones.
+    </p>
+    <div class="stat-bar">
+      <div class="stat"><span class="v">35</span><span class="l">traces today</span></div>
+      <div class="stat warn"><span class="v">65</span><span class="l">still needed</span></div>
+      <div class="stat"><span class="v">100</span><span class="l">Hamel's saturation floor</span></div>
+      <div class="stat"><span class="v">6</span><span class="l">themes found so far</span></div>
+      <div class="stat fail"><span class="v">0/14</span><span class="l">retrieval fails confirmed</span></div>
+    </div>
+  </header>
+
+  <section>
+    <h2><span class="num">01</span>What "synthetic" means here — and what it doesn't</h2>
+    <p class="lede">
+      Per the autopsy's own honest-limitation callout: all 35 existing traces are already
+      synthetic — a seeding script driving hand-picked questions through the real
+      <span class="mono">/chat/stream</span> endpoint. "Synthetic" doesn't mean fake retrieval
+      or a mocked LLM; it means the <em>input distribution</em> is authored instead of observed.
+      The fundamentals, per Hamel's Evals FAQ, are a two-step pipeline, not one big prompt:
+    </p>
+    <figure>
+      <div class="diagram-card">
+        <svg viewBox="0 0 860 260" role="img" aria-label="Synthetic data pipeline: dimensions combine into tuples, tuples convert to natural language queries in a separate LLM call, queries run through the real system to produce traces, traces feed error analysis, which can refine the dimensions.">
+          <defs>
+            <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+          <g font-family="IBM Plex Mono, monospace" font-size="12">
+            <rect x="20" y="40" width="140" height="60" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+            <text x="90" y="66" text-anchor="middle" font-weight="600">dimensions</text>
+            <text x="90" y="82" text-anchor="middle" font-size="9.5" fill-opacity="0.6">~20 hand-written</text>
+
+            <rect x="200" y="40" width="140" height="60" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+            <text x="270" y="66" text-anchor="middle" font-weight="600">tuples</text>
+            <text x="270" y="82" text-anchor="middle" font-size="9.5" fill-opacity="0.6">1 value per dim</text>
+
+            <rect x="380" y="40" width="150" height="60" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+            <text x="455" y="60" text-anchor="middle" font-weight="600">NL query</text>
+            <text x="455" y="76" text-anchor="middle" font-size="9.5" fill-opacity="0.6">separate LLM call</text>
+            <text x="455" y="88" text-anchor="middle" font-size="9.5" fill-opacity="0.6">(prevents repetition)</text>
+
+            <rect x="570" y="40" width="130" height="60" rx="8" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+            <text x="635" y="66" text-anchor="middle" font-weight="600" fill="var(--accent)">real system</text>
+            <text x="635" y="82" text-anchor="middle" font-size="9.5" fill="var(--accent)" fill-opacity="0.75">retrieval + LLM</text>
+
+            <rect x="740" y="40" width="100" height="60" rx="8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 3"/>
+            <text x="790" y="66" text-anchor="middle" font-weight="600">trace</text>
+            <text x="790" y="82" text-anchor="middle" font-size="9.5" fill-opacity="0.6">seed0036…</text>
+          </g>
+          <line x1="160" y1="70" x2="196" y2="70" stroke="currentColor" stroke-opacity="0.4" stroke-width="2" marker-end="url(#arrow2)"/>
+          <line x1="340" y1="70" x2="376" y2="70" stroke="currentColor" stroke-opacity="0.4" stroke-width="2" marker-end="url(#arrow2)"/>
+          <line x1="530" y1="70" x2="566" y2="70" stroke="currentColor" stroke-opacity="0.4" stroke-width="2" marker-end="url(#arrow2)"/>
+          <line x1="700" y1="70" x2="736" y2="70" stroke="currentColor" stroke-opacity="0.4" stroke-width="2" marker-end="url(#arrow2)"/>
+
+          <path d="M790,100 C790,180 90,200 90,110" fill="none" stroke="var(--warn)" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow2)"/>
+          <text x="440" y="210" text-anchor="middle" font-size="11" fill="var(--warn)" font-family="IBM Plex Mono, monospace" font-weight="600">error analysis feeds back → refine dimensions</text>
+          <text x="440" y="228" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity="0.6" font-family="IBM Plex Sans, sans-serif">this is how "bad-refusal" would get its own dimension value next round</text>
+        </svg>
+      </div>
+      <figcaption>
+        The step people skip is the middle one: prompting an LLM once for "20 test queries about
+        a university handbook" produces generic, repetitive phrasing. Splitting <strong>tuple
+        generation</strong> from <strong>NL rendering</strong> — and writing the first ~20 tuples
+        by hand before automating the rest — is what the dimensions framework buys you.
+      </figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2><span class="num">02</span>Dimensions, mapped to this bot's actual failure modes</h2>
+    <p class="lede">
+      Generic dimensions ("topic", "difficulty") would regenerate generic traces. These five are
+      reverse-engineered from the six themes the autopsy already found — each one is a lever that
+      should reproduce, or deliberately probe near, a known failure boundary.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:16%">Dimension</th>
+            <th style="width:34%">Example values</th>
+            <th>Targets which theme(s)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="row-label">Query intent</td>
+            <td class="mono">factual-lookup · procedural "what do I do if…" · meta-document ("does the handbook cover…") · off-topic / injection</td>
+            <td>procedural + meta map to <strong>bad-refusal</strong> and <strong>doc-length hallucination</strong>; injection maps to <strong>guardrail bypass</strong> (currently n=1 — needs more)</td>
+          </tr>
+          <tr>
+            <td class="row-label">Context specificity</td>
+            <td class="mono">names exact office/policy · vague symptom only ("something went wrong") · topic confirmed absent from corpus</td>
+            <td>the vague-symptom value is exactly what surfaced <span class="mono">seed0021</span>'s bad-refusal — retrieval found something specific, model still deflected</td>
+          </tr>
+          <tr>
+            <td class="row-label">Persona / mood</td>
+            <td class="mono">neutral · stressed student · adversarial tester</td>
+            <td>the tone/service-quality axis that caught bad-refusal was found on a <em>manual re-read</em>, not the first pass — seeding personas directly should surface it without needing a second read</td>
+          </tr>
+          <tr>
+            <td class="row-label">Turn structure</td>
+            <td class="mono">single-shot · follow-up referencing prior turn</td>
+            <td><strong>no-context follow-up</strong> (currently n=1) — under-sampled relative to how common multi-turn is in real chat</td>
+          </tr>
+          <tr>
+            <td class="row-label">Corpus coverage</td>
+            <td class="mono">common in-corpus · rare in-corpus (near page boundary) · confirmed absent (e.g. "grievance")</td>
+            <td>deliberately generates <em>more</em> absent-topic probes like <span class="mono">seed0003</span> — the only way to raise confidence that 0/14 retrieval fails is real and not just under-tested</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">03</span>Two ways to turn dimensions into tuples</h2>
+    <div class="cardgrid">
+      <div class="card">
+        <span class="tag">cross-product + filter</span>
+        <h3>Generate every combination, then prune</h3>
+        <p>Multiply all dimension values (4 × 3 × 3 × 2 × 3 = 216 combos here), then use an LLM
+        pass to drop nonsensical or duplicate-feeling ones down to the batch size you want.</p>
+        <ul>
+          <li>Guarantees coverage — no cell of the space goes untested</li>
+          <li>Some combinations are incoherent ("adversarial + confirmed-absent + follow-up") and get filtered anyway</li>
+          <li>Best when you suspect a specific unexplored corner (e.g. persona × corpus-coverage)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="tag">direct LLM generation</span>
+        <h3>Ask the model to pick plausible tuples</h3>
+        <p>Give the model the dimension list and ask it to propose N realistic tuples directly,
+        weighted toward combinations a real user would hit.</p>
+        <ul>
+          <li>Reads more like real traffic — good for the "single-shot, neutral, common-topic" majority case</li>
+          <li>Risks under-sampling rare-but-important corners (exactly the ones worth 5/35 and 1/35 findings)</li>
+          <li>Cheaper — one LLM call instead of generate-then-filter</li>
+        </ul>
+      </div>
+    </div>
+    <p class="lede" style="font-size:.82rem">
+      In practice: cross-product for the corners you're actively trying to stress (guardrail
+      bypass, no-context follow-up — both still n=1), direct generation for bulk volume toward
+      the 100-trace floor.
+    </p>
+  </section>
+
+  <section>
+    <h2><span class="num">04</span>Build your own tuple queue</h2>
+    <p class="lede">
+      Pick one value per dimension, add it to the queue, repeat. This mirrors the two-step
+      process above — the preview text is illustrative phrasing to sanity-check the tuple, not a
+      model call; swap in an actual LLM render step in the seeding script. Export the queue as
+      JSON to hand to that script once you're happy with the mix.
+    </p>
+    <div class="builder">
+      <div class="dim-grid">
+        <div class="dim-field">
+          <label for="d-intent">Query intent</label>
+          <select id="d-intent">
+            <option value="factual-lookup">factual-lookup</option>
+            <option value="procedural">procedural "what do I do if…"</option>
+            <option value="meta-document">meta-document</option>
+            <option value="injection">off-topic / injection</option>
+          </select>
+        </div>
+        <div class="dim-field">
+          <label for="d-spec">Context specificity</label>
+          <select id="d-spec">
+            <option value="exact">names exact office/policy</option>
+            <option value="vague">vague symptom only</option>
+            <option value="absent">confirmed absent from corpus</option>
+          </select>
+        </div>
+        <div class="dim-field">
+          <label for="d-persona">Persona / mood</label>
+          <select id="d-persona">
+            <option value="neutral">neutral</option>
+            <option value="stressed">stressed student</option>
+            <option value="adversarial">adversarial tester</option>
+          </select>
+        </div>
+        <div class="dim-field">
+          <label for="d-turn">Turn structure</label>
+          <select id="d-turn">
+            <option value="single">single-shot</option>
+            <option value="followup">follow-up on prior turn</option>
+          </select>
+        </div>
+        <div class="dim-field">
+          <label for="d-coverage">Corpus coverage</label>
+          <select id="d-coverage">
+            <option value="common">common in-corpus</option>
+            <option value="rare">rare / near page boundary</option>
+            <option value="absent">confirmed absent</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="builder-preview" id="preview">— pick values above —</div>
+
+      <div class="builder-actions">
+        <button class="primary" id="add-btn" type="button">+ Add tuple to queue</button>
+        <button id="copy-json" type="button">Copy queue as JSON</button>
+        <button id="copy-md" type="button">Copy queue as Markdown</button>
+        <button id="clear-btn" type="button">Clear queue</button>
+        <span class="copy-feedback" id="copy-feedback">copied</span>
+      </div>
+
+      <div class="progress-wrap">
+        <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+        <span class="progress-label" id="progress-label">35 real + 0 queued = 35 / 100</span>
+      </div>
+
+      <div class="queue-wrap">
+        <table>
+          <thead>
+            <tr><th style="width:26%">Intent</th><th style="width:20%">Specificity</th><th style="width:16%">Persona</th><th style="width:14%">Turn</th><th style="width:14%">Coverage</th><th></th></tr>
+          </thead>
+          <tbody id="queue-body"></tbody>
+        </table>
+        <div class="queue-empty" id="queue-empty">No tuples queued yet — add one above.</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">05</span>How the synthetic-data market got here</h2>
+    <p class="lede">
+      Worth knowing before picking a vendor: most "synthetic data companies" were built for
+      tabular/PII-safe data (finance, healthcare), not eval traces for LLM apps — that's a
+      recent, mostly open-source-tooling offshoot.
+    </p>
+    <div class="timeline">
+      <div class="tl-item">
+        <div class="tl-year">2016</div>
+        <div class="tl-title">Scale AI founded</div>
+        <div class="tl-desc">Human-labeling-as-a-service; later expands into RLHF data and a "high switching cost" enterprise strategy — not primarily an eval-synthesis tool.</div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-year">2020</div>
+        <div class="tl-title">Gretel founded</div>
+        <div class="tl-desc">Tabular/PII-safe synthetic data via generative models — privacy-preserving data for training, not LLM eval traces.</div>
+      </div>
+      <div class="tl-item fail">
+        <div class="tl-year">2022–2024</div>
+        <div class="tl-title">Datagen and Synthesis AI stumble</div>
+        <div class="tl-desc">Datagen raised $70M then shut down; both it and Synthesis AI were built around one-time synthetic-image/data sales and failed to adapt when generative AI made ad-hoc, prompt-driven synthesis cheap and commodity.</div>
+      </div>
+      <div class="tl-item pass">
+        <div class="tl-year">2023–2024</div>
+        <div class="tl-title">Eval-native tools emerge, open source</div>
+        <div class="tl-desc">RAGAS ships a <span class="mono">TestsetGenerator</span> using knowledge-graph + Evol-Instruct-style question evolution specifically for RAG. DeepEval and promptfoo add synthesizers. Mostly AI open-sources its tabular SDK under Apache 2.0.</div>
+      </div>
+      <div class="tl-item pass">
+        <div class="tl-year">2025</div>
+        <div class="tl-title">NVIDIA acquires Gretel (~$320M+)</div>
+        <div class="tl-desc">Folded into the NVIDIA AI Enterprise stack — synthetic data becomes infrastructure, not a standalone product category.</div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-year">2026</div>
+        <div class="tl-title">Shift to "behavioral datasets"</div>
+        <div class="tl-desc">The framing moves past "generate a CSV of questions" toward persona-driven, multi-turn simulation that scores every span of an agent trace (Future AGI's fi.simulate, OpenAI Agents SDK tracing, CrewAI's training harnesses) — closer to what §01–02 above already sketch for this bot.</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">06</span>Tools that actually fit a RAG eval corpus</h2>
+    <div class="ladder">
+      <div class="finding">
+        <div class="title">RAGAS <span class="mono">TestsetGenerator</span></div>
+        <div class="chips"><span class="chip tier-code">document-grounded</span><span class="chip stage">RAG-specific</span></div>
+        <p class="desc">Builds a knowledge graph from your ingested documents, then applies "evolution" prompts (simple → multi-context → reasoning) to generate QA pairs with controllable difficulty. Closest off-the-shelf match to the corpus-coverage and query-intent dimensions above — worth trialing against <span class="mono">handbook_chunks</span> directly since it's document-native, not prompt-only.</p>
+      </div>
+      <div class="finding">
+        <div class="title">DeepEval Synthesizer</div>
+        <div class="chips"><span class="chip tier-code">developer-first</span><span class="chip stage">library</span></div>
+        <p class="desc">Generates test datasets from source documents including multi-turn conversational scenarios — useful for the turn-structure dimension (follow-up cases), runs as a Python library alongside existing test code rather than a hosted platform.</p>
+      </div>
+      <div class="finding">
+        <div class="title">promptfoo redteam</div>
+        <div class="chips"><span class="chip tier-model">500+ attack vectors</span><span class="chip stage">security</span></div>
+        <p class="desc">Purpose-built for the injection/adversarial corner — directly relevant to closing out guardrail-bypass, which is stuck at n=1 and is the one theme in the autopsy explicitly waiting on more labeled examples before an LLM judge is viable.</p>
+      </div>
+      <div class="finding">
+        <div class="title">Manual dimensions + raw LLM calls (Hamel's method)</div>
+        <div class="chips"><span class="chip fixed">what we already used</span><span class="chip stage">no new dependency</span></div>
+        <p class="desc">Everything in §01–04 above is this approach, just made explicit — no new tool to install, and it's what produced the existing 35 traces the seeding script already drives through <span class="mono">/chat/stream</span>. The realistic next step is extending the same seeding script with the five dimensions, not adopting a new platform.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">07</span>Roadmap, with this session's scope carved out</h2>
+    <ol class="roadmap">
+      <li class="skipped">
+        <div>
+          <p class="step-title">Fix empty-output-as-silent-success in the capture path</p>
+          <p class="step-why"><span class="mono">app/main.py</span> bug from the autopsy's §05 step 3 — explicitly out of scope for this pass. Noted here only so growing the corpus doesn't quietly re-surface it as a "new" finding.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <p class="step-title">Extend the seeding script with the five dimensions above</p>
+          <p class="step-why">Hand-write ~20 tuples first (per Hamel's method), covering every dimension value at least once, biased toward the under-sampled corners: guardrail-bypass-adjacent injection queries and follow-up turns.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <p class="step-title">Generate the remaining tuples, render to NL, run through <span class="mono">/chat/stream</span></p>
+          <p class="step-why">Two-step generation (tuples → separate NL-rendering call) to avoid repetitive phrasing; run every query through the real pipeline so traces are genuine retrieval + genuine LLM output, matching how the first 35 were captured.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <p class="step-title">Re-run open + axial coding on all ~100, watch for saturation</p>
+          <p class="step-why">Hamel's actual bar isn't the count, it's whether new traces stop adding new categories. If theme 7 keeps appearing past trace 80, the pool isn't saturated yet regardless of hitting 100.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <p class="step-title">Triangulate against real production traffic once available</p>
+          <p class="step-why">Per the autopsy's own callout: a seeded corpus can only surface failure modes its author thought to seed. Treat everything above as closing the gap to Hamel's floor, not as a substitute for real usage data.</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <section>
+    <div class="callout">
+      <strong>The ceiling on synthetic data:</strong> no dimension framework escapes the fact that
+      a human authored the dimensions. 100 synthetic traces reduce sampling noise in the taxonomy
+      counts; they do not manufacture failure modes nobody thought to seed. The autopsy's
+      guardrail-bypass and no-context-follow-up themes are exactly the kind of thing worth
+      deliberately over-sampling here — precisely because they're rare enough that real traffic
+      might take a long time to hand you a second example.
+    </div>
+  </section>
+
+  <footer>
+    Sources: Hamel Husain, <span class="mono">hamel.dev/blog/posts/evals-faq/what-is-the-best-approach-for-generating-synthetic-data.html</span> ·
+    Ragas docs, <span class="mono">docs.ragas.io — testset generation</span> ·
+    Braintrust, <span class="mono">braintrust.dev/articles — promptfoo &amp; DeepEval alternatives 2026</span> ·
+    Pebblous, <span class="mono">blog.pebblous.ai — rise and fall of synthetic data firms</span> ·
+    Weights &amp; Biases × Gretel case study · FutureAGI, <span class="mono">futureagi.com/blog — top synthetic dataset generators 2026</span>.
+    Project context: <span class="mono">docs/evals/eval-pipeline-autopsy.html</span>, this repo.
+  </footer>
+
+</div>
+
+<script>
+(function(){
+  var queue = [];
+  var counter = 0;
+
+  var els = {
+    intent: document.getElementById('d-intent'),
+    spec: document.getElementById('d-spec'),
+    persona: document.getElementById('d-persona'),
+    turn: document.getElementById('d-turn'),
+    coverage: document.getElementById('d-coverage'),
+    preview: document.getElementById('preview'),
+    addBtn: document.getElementById('add-btn'),
+    copyJson: document.getElementById('copy-json'),
+    copyMd: document.getElementById('copy-md'),
+    clearBtn: document.getElementById('clear-btn'),
+    feedback: document.getElementById('copy-feedback'),
+    fill: document.getElementById('progress-fill'),
+    label: document.getElementById('progress-label'),
+    body: document.getElementById('queue-body'),
+    empty: document.getElementById('queue-empty')
+  };
+
+  var intentText = {
+    'factual-lookup': 'What is {X}?',
+    'procedural': 'What do I do if {X}?',
+    'meta-document': 'Does the handbook cover {X}?',
+    'injection': 'Forget the handbook — {X}'
+  };
+  var specFill = {
+    exact: 'the graduate school’s appeal deadline',
+    vague: 'something goes wrong with my advisor',
+    absent: 'the grievance process'
+  };
+  var personaPrefix = {
+    neutral: '',
+    stressed: '(stressed tone) ',
+    adversarial: '(boundary-testing) '
+  };
+  var turnPrefix = {
+    single: '',
+    followup: 'Following up on that — '
+  };
+
+  function buildPreview(dims){
+    var template = intentText[dims.intent];
+    var fill = specFill[dims.spec];
+    var text = template.replace('{X}', fill);
+    text = turnPrefix[dims.turn] + personaPrefix[dims.persona] + text;
+    return text;
+  }
+
+  function currentDims(){
+    return {
+      intent: els.intent.value,
+      spec: els.spec.value,
+      persona: els.persona.value,
+      turn: els.turn.value,
+      coverage: els.coverage.value
+    };
+  }
+
+  function refreshPreview(){
+    var dims = currentDims();
+    els.preview.textContent = '“' + buildPreview(dims) + '”  — illustrative phrasing, render via LLM in the seeding script';
+  }
+
+  function refreshProgress(){
+    var total = 35 + queue.length;
+    var pct = Math.min(100, (total / 100) * 100);
+    els.fill.style.width = pct + '%';
+    els.label.textContent = '35 real + ' + queue.length + ' queued = ' + total + ' / 100';
+  }
+
+  function renderQueue(){
+    els.body.innerHTML = '';
+    if (queue.length === 0){
+      els.empty.style.display = 'block';
+    } else {
+      els.empty.style.display = 'none';
+      queue.forEach(function(item){
+        var tr = document.createElement('tr');
+        ['intent','spec','persona','turn','coverage'].forEach(function(k){
+          var td = document.createElement('td');
+          td.className = 'mono';
+          td.textContent = item[k];
+          tr.appendChild(td);
+        });
+        var tdBtn = document.createElement('td');
+        var btn = document.createElement('button');
+        btn.className = 'del-btn';
+        btn.type = 'button';
+        btn.textContent = '✕';
+        btn.addEventListener('click', function(){
+          queue = queue.filter(function(q){ return q.id !== item.id; });
+          renderQueue();
+          refreshProgress();
+        });
+        tdBtn.appendChild(btn);
+        tr.appendChild(tdBtn);
+        els.body.appendChild(tr);
+      });
+    }
+    refreshProgress();
+  }
+
+  function showFeedback(msg){
+    els.feedback.textContent = msg;
+    els.feedback.classList.add('show');
+    setTimeout(function(){ els.feedback.classList.remove('show'); }, 1400);
+  }
+
+  [els.intent, els.spec, els.persona, els.turn, els.coverage].forEach(function(sel){
+    sel.addEventListener('change', refreshPreview);
+  });
+
+  els.addBtn.addEventListener('click', function(){
+    var dims = currentDims();
+    dims.id = ++counter;
+    queue.push(dims);
+    renderQueue();
+  });
+
+  els.clearBtn.addEventListener('click', function(){
+    queue = [];
+    renderQueue();
+  });
+
+  els.copyJson.addEventListener('click', function(){
+    var payload = queue.map(function(q){
+      return { intent: q.intent, specificity: q.spec, persona: q.persona, turn: q.turn, coverage: q.coverage };
+    });
+    var text = JSON.stringify(payload, null, 2);
+    try {
+      navigator.clipboard.writeText(text);
+      showFeedback('copied ' + queue.length + ' tuples as JSON');
+    } catch(e){
+      showFeedback('copy failed — select manually');
+    }
+  });
+
+  els.copyMd.addEventListener('click', function(){
+    var lines = ['| intent | specificity | persona | turn | coverage |', '|---|---|---|---|---|'];
+    queue.forEach(function(q){
+      lines.push('| ' + q.intent + ' | ' + q.spec + ' | ' + q.persona + ' | ' + q.turn + ' | ' + q.coverage + ' |');
+    });
+    var text = lines.join('\n');
+    try {
+      navigator.clipboard.writeText(text);
+      showFeedback('copied ' + queue.length + ' tuples as Markdown');
+    } catch(e){
+      showFeedback('copy failed — select manually');
+    }
+  });
+
+  refreshPreview();
+  renderQueue();
+})();
+</script>
