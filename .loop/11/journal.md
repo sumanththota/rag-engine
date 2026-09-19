@@ -572,3 +572,37 @@ $ pytest -q tests/test_threads.py::test_cross_user_cannot_write_into_another_use
 - (No changes to tests, templates, or other files)
 
 **Commit:** ab52f0f (impl/11-persist-threads)
+
+## Orchestrator response to round-5 verifier NEEDS_WORK — 2026-09-19T21:00:00Z
+
+Verifier's mutation-tested verdict: rounds 1-4's fixes confirmed correct; two narrow
+issues remained.
+
+**Finding A (criterion 6 test unfalsifiable):** fixed by rewriting
+`test_anonymous_chat_does_not_write_threads` to seed a REAL user + REAL thread first,
+then point anonymous requests (including the "spoofed" thread_id leg) at that real id,
+instead of a made-up id (999999999) that can never exist and so can't distinguish a
+correct implementation from a broken one (a mutant writing into a supplied thread_id,
+or creating a thread under a made-up user_id, previously passed anyway since an FK
+violation blocked the bogus insert regardless of whether the app code was right).
+Ran against CURRENT code first: passes (green) — the `user is not None` gate in both
+chat_start and chat_stream already correctly ignores any thread_id from an anonymous
+caller, real or not. This test now actually proves that instead of assuming it.
+
+**Finding B (oversized thread_id -> 500):** added
+`test_oversized_thread_id_returns_404_not_500` (thread_id="99999999999999999999",
+exceeds Postgres bigint range). Ran against CURRENT code first: RED, exactly as the
+verifier found — `500` on `/chat/start`, not `404` (confirmed via
+`ASGITransport(raise_app_exceptions=False)` to observe the actual status code rather
+than have httpx re-raise the unhandled exception in the test itself).
+
+Both new/rewritten tests committed; full suite otherwise unaffected (113 passed,
+1 new failure — the oversized-id test, expected until the fix lands).
+
+**Not doing myself:** the actual `app/main.py` fix (catching `ThreadsError` around
+the `get_thread` ownership-check call sites in `chat_start` and `chat_stream`,
+returning 404) — that's feature code. Spawning an implementer scoped to exactly that,
+instructed to make only `test_oversized_thread_id_returns_404_not_500` pass and touch
+nothing else — per instruction, not touching the three non-blocking notes
+(`write_message(user_id=None)` skipping the guard, its check-then-insert atomicity,
+criterion 4's list-route-only coverage) since those weren't in the two required fixes.
