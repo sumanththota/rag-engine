@@ -665,3 +665,34 @@ Run 3: ........................................................................ 
 - `app/main.py` — added ThreadsError catch blocks in chat_start and chat_stream
 
 **Commit:** impl/11-persist-threads
+
+## Orchestrator response to round-6 verifier NEEDS_WORK — 2026-09-19T22:00:00Z
+
+Verifier's raw verdict on PR #15: rounds 1-5 (criteria 1,2,3,4,6) confirmed passing.
+Round-5 fix A (criterion 6 falsifiability) confirmed. Round-5 fix B was only partly
+fixed: /chat/start and /chat/stream now correctly return 404 for an out-of-bigint-range
+thread_id, but GET /threads/{id} and DELETE /threads/{id} still 500 on the same input
+(checked with 99999999999999999999 and the exact int64-max+1 boundary,
+9223372036854775808) — criterion 5 requires 404/403 for a guessed/invalid id on every
+route that takes one, not just two of four.
+
+Also fixed in passing: verify/11-persist-threads had gone stale (still at 73aaddb from
+early in this ticket's history; the verifier worked around it by checking out the PR
+head directly rather than testing the wrong code, correctly). Fast-forwarded it to
+impl/11-persist-threads's current tip.
+
+Added `test_get_and_delete_thread_oversized_id_returns_404_not_500` (same shape as the
+existing chat-routes test), covering both routes and both the exact int64 boundary and
+a grossly-oversized value. Ran against CURRENT code first: RED, exactly as the verifier
+found — `500` on `GET /threads/{id}` for both inputs (asyncpg: "value out of int64
+range"). Full suite otherwise unaffected (114 passed, 1 new expected failure).
+
+**Not doing myself:** the actual fix. Per instruction this needs a genuine refactor,
+not a third copy-paste of "catch ThreadsError, return 404" — a single shared
+bounds-check function that all four thread_id-accepting routes call, so a fifth route
+added later is structurally unable to skip it. That's a design decision belonging to
+the implementer, not orchestrator-authored test code. Spawning an implementer scoped
+to exactly that: add the shared function, wire it into all four routes (including the
+two already-passing chat routes, for consistency and defense-in-depth — without
+changing their existing, tested behavior for the non-numeric/foreign-id cases), and
+make the new test pass.
