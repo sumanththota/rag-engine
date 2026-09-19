@@ -13,12 +13,14 @@ import asyncpg
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+import re
+
 from app.auth import AuthStore
 from app.config import Settings
 from app.embed import OllamaClient
 from app.main import create_app
-from app.rag import RagService
-from app.store import PostgresStore
+from app.rag import BuildPromptResult, RagService, RewriteOutcome, RewriteOutcomeStatus
+from app.store import PostgresStore, SearchResult
 from app.threads import ThreadStore
 from app.traces import TraceStore
 
@@ -75,6 +77,187 @@ def _app_with_auth(auth_store: AuthStore, thread_store: ThreadStore) -> FastAPI:
 
 def _async_client(app: FastAPI) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver")
+
+
+class _FakeStreamClient:
+    """Stands in for a real provider client so /chat/stream's generation step
+    completes deterministically without a network call, letting the flow reach
+    write_threads()."""
+
+    def __init__(self, tokens: list[str]) -> None:
+        self._tokens = tokens
+
+    async def stream_answer(self, api_key: str, model: str, prompt: str):
+        for t in self._tokens:
+            yield t
+
+
+def _thread_id_from_chat_start_html(html: str) -> int | None:
+    """Parses the numeric thread_id (5th arg) out of chat_start's rendered
+    window.startAnswerStream(...) call, the same contract the real frontend
+    reads to build the next turn's request."""
+    match = re.search(
+        r'startAnswerStream\("[^"]*","[^"]*","[^"]*","[^"]*"(?:,"([^"]*)")?\)', html
+    )
+    if not match or match.group(1) is None:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+# ---- Fixed acceptance test (CONVENTIONS.md §7): the conversation-persistence ----
+# ---- contract, as ONE unit of work — not four separately-passable criteria. ----
+
+
+async def test_conversation_persists_across_turns_and_devices():
+    """Two real turns through POST /chat/start + GET /chat/stream, same session:
+
+    - both turns must share one thread_id, asserted unconditionally (no `if` guard —
+      CONVENTIONS.md §7's ban on a conditional-guarded assertion as the only check)
+    - thread_messages must end up with 4 rows (2 turns x 2 sides), sources present
+      on the assistant side
+    - GET /threads/{id} (the "another device" / refresh path) must return BOTH
+      turns' messages — a client that only ever reads GET /threads' list response
+      (which carries no message content) cannot satisfy this.
+    """
+    pool = await _pool()
+    auth_store = AuthStore(pool)
+    thread_store = ThreadStore(pool)
+    email = "test-11-conv-persist@example.com"
+
+    try:
+        await auth_store.ensure_schema()
+        await thread_store.ensure_schema()
+        await _cleanup(pool, email)
+
+        rag_service = RagService(
+            store=PostgresStore(pool=None),
+            embed_client=OllamaClient("http://127.0.0.1:1"),
+            collection="handbook_chunks",
+            top_k=10,
+            pdf_path="unused.pdf",
+        )
+
+        async def _fake_build_prompt(question: str) -> BuildPromptResult:
+            return BuildPromptResult(
+                prompt=f"prompt for: {question}",
+                results=[SearchResult(text="handbook excerpt", page=1, score=0.9)],
+                rewrite_outcome=RewriteOutcome(status=RewriteOutcomeStatus.NOT_CONFIGURED),
+            )
+
+        rag_service.build_prompt = _fake_build_prompt
+
+        settings = Settings(
+            handbook_path="unused.pdf",
+            database_url=_DSN,
+            secret_key=_SECRET_KEY,
+            app_env="development",
+        )
+        app = create_app(
+            rag_service=rag_service,
+            provider_clients={"ollama": _FakeStreamClient(["Hello", " there"])},
+            api_keys={},
+            embed_client=OllamaClient("http://127.0.0.1:1"),
+            store=PostgresStore(pool=None),
+            trace_store=TraceStore(pool),
+            thread_store=thread_store,
+            settings=settings,
+            auth_store=auth_store,
+        )
+        await TraceStore(pool).ensure_schema()
+
+        async with _async_client(app) as client:
+            signup = await client.post(
+                "/signup", json={"email": email, "password": "test123"}
+            )
+            assert signup.status_code == 201
+            user_id = signup.json()["id"]
+            login = await client.post(
+                "/login", json={"email": email, "password": "test123"}
+            )
+            assert login.status_code == 200
+
+            # ---- Turn 1 ----
+            start1 = await client.post(
+                "/chat/start",
+                data={"question": "What is the PTO policy?", "model_id": "ollama_gemma4_26b"},
+            )
+            assert start1.status_code == 200
+            thread_id_1 = _thread_id_from_chat_start_html(start1.text)
+            assert thread_id_1 is not None and thread_id_1 > 0, (
+                "chat_start must return a numeric thread_id for a logged-in user's turn "
+                f"(got {thread_id_1!r} from: {start1.text!r})"
+            )
+
+            stream1 = await client.get(
+                "/chat/stream",
+                params={
+                    "question": "What is the PTO policy?",
+                    "model_id": "ollama_gemma4_26b",
+                    "started_at_ms": "0",
+                    "trace_id": "test-11-trace-1",
+                    "thread_id": str(thread_id_1),
+                },
+            )
+            assert stream1.status_code == 200
+
+            # ---- Turn 2: sends the SAME thread_id back, as a persisted client must ----
+            start2 = await client.post(
+                "/chat/start",
+                data={
+                    "question": "And sick leave?",
+                    "model_id": "ollama_gemma4_26b",
+                    "thread_id": str(thread_id_1),
+                },
+            )
+            assert start2.status_code == 200
+            thread_id_2 = _thread_id_from_chat_start_html(start2.text)
+            # Unconditional — a value that fails to parse or comes back different
+            # IS the failure this test exists to catch, not a case to skip.
+            assert thread_id_2 == thread_id_1, (
+                "turn 2 must reuse turn 1's thread_id instead of minting a new thread "
+                f"(turn 1: {thread_id_1!r}, turn 2: {thread_id_2!r})"
+            )
+
+            stream2 = await client.get(
+                "/chat/stream",
+                params={
+                    "question": "And sick leave?",
+                    "model_id": "ollama_gemma4_26b",
+                    "started_at_ms": "0",
+                    "trace_id": "test-11-trace-2",
+                    "thread_id": str(thread_id_1),
+                },
+            )
+            assert stream2.status_code == 200
+
+            # ---- thread_messages: 4 rows, sources on the assistant side ----
+            detail = await thread_store.get_thread(thread_id_1, user_id)
+            assert detail is not None
+            assert len(detail.messages) == 4, (
+                f"expected 4 thread_messages rows (2 turns x 2 sides), got "
+                f"{len(detail.messages)}: {[m.role for m in detail.messages]}"
+            )
+            roles = [m.role for m in detail.messages]
+            assert roles == ["user", "assistant", "user", "assistant"], roles
+            assert detail.messages[1].sources, "turn 1's assistant message must carry sources"
+            assert detail.messages[3].sources, "turn 2's assistant message must carry sources"
+
+            # ---- GET /threads/{id}: the refresh / "another device" path ----
+            # must return the full conversation, not an empty/short messages list.
+            detail_resp = await client.get(f"/threads/{thread_id_1}")
+            assert detail_resp.status_code == 200
+            payload = detail_resp.json()
+            assert len(payload["messages"]) == 4, (
+                "GET /threads/{id} must return both turns' messages — a client "
+                "that hydrates from a list endpoint with no message content, or "
+                "hardcodes messages: [], cannot satisfy this: "
+                f"got {payload['messages']!r}"
+            )
+    finally:
+        await _cleanup(pool, email)
 
 
 # ---- Criterion 1: Thread_id round-trip through chat_start -> client state -> next turn ----
