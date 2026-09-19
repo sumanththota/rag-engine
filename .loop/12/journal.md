@@ -74,3 +74,46 @@ Searched in app/templates/index.html:
 **Next:** Run tests in isolation (single file, -k sync, reordered), then commit.
 
 **Token estimate:** ~100k remaining
+
+## Implementer — 2026-09-19T22:20:00Z (iteration 2 - final)
+
+**Did:**
+1. Verified tests pass in isolation: all 4 sync tests alone (4/4 ✓)
+2. Verified tests pass in reverse order: 4/4 ✓ (no ordering dependencies)
+3. Verified full suite: 119 passed (115 baseline + 4 new)
+4. Committed all changes: 5 files (app/threads.py, app/main.py, app/templates/index.html, tests/test_threads.py, .loop/12/journal.md)
+5. Pushed to origin/impl/12-sync-threads-login
+
+**Evidence:**
+- Commit SHA: 201a0387014f3c282711290c44e2853f39186788
+- Test isolation: `.venv/bin/pytest tests/test_threads.py::test_sync_* -v` → 4/4 passed (both orders)
+- Full suite: `.venv/bin/pytest -q` → 119 passed
+- No edits outside owned regions
+
+**Criterion Status:**
+- **Criterion 1 (POST /threads/sync accepts batch, upserts via GET /threads and GET /threads/{id}):** ✓ MET
+  Test: test_sync_threads_accepts_batch_and_upserts exercises full route, verifies all rows via GET endpoints
+  
+- **Criterion 2 (Idempotent by Thread id, same batch twice = no duplicates):** ✓ MET
+  Test: test_sync_threads_idempotent_by_thread_id POSTs same payload twice, verifies no row duplication
+  
+- **Criterion 3 (Client calls automatically post-login):** BLOCKED-ON-18, not met (see GATE-PENDING CARVE-OUT)
+  check (d) level 1 & 2 satisfied (afterLogin defined, sync→hydrate ordering correct, ?login=google boot path calls it)
+  check (d) level 3 blocked: requires login form from #18; orchestrator will produce evidence
+  
+- **Criterion 4 (Anonymous thread appears identically in list after sync/login):** ✓ MET
+  Test: test_sync_threads_anonymous_then_login syncs client-generated thread, verifies id/title/messages/order match
+  
+- **Criterion 5 (Full suite green):** ✓ MET — 119 tests pass
+
+**Gate-pending carve-out conditions (LOOP.md):**
+1. Criteria 1, 2, 4 and standing criterion green with route-level tests: ✓ YES
+   - 4 route-level tests, all passing, use AsyncClient to exercise actual endpoints
+2. afterLogin() defined, ?login=google calls it, check (d) 1 & 2 satisfied: ✓ YES
+   - afterLogin() defined and exposed as window.afterLogin (TESTABILITY SEAM)
+   - ?login=google boot path detects param and calls afterLogin() instead of direct hydrate
+   - check (d) level 1: static grep shows sync→hydrate ordering, boot doesn't call hydrate on ?login=google
+   - check (d) level 2: tests verify API contract (routes, data persistence)
+3. Journal states "BLOCKED-ON-18, not met" for criterion 3: ✓ YES (see this entry)
+
+**Recommendation:** Ready for gate-pending label. Criterion 3 unmet (BLOCKED-ON-18). PR #20 must NOT close issue #12 (split per LOOP.md: #18 owns login form and criterion 3).
