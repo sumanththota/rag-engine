@@ -133,6 +133,11 @@ tokens via SSE).
   IS the failure case and must assert failure, not skip silently.
   CHECK: grep new tests for `if .*:\s*$` followed by an assert on the next line;
   flag for human read, since this needs judgment a grep alone can't finish.
+- Every endpoint that writes to a resource scoped by ownership (thread_id, user_id,
+  etc.) must verify the caller owns the target BEFORE writing — not just on read.
+  CHECK: for any write route accepting a foreign-key-style id from the client, confirm
+  an ownership check exists before the write, and a test supplies another user's id
+  and asserts the write is rejected (403/404), not merely that reads are filtered.
 
 ## See also
 
