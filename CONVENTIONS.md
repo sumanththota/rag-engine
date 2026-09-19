@@ -124,6 +124,10 @@ tokens via SSE).
   `.loop/11/journal.md`). The `PYTHONPATH=.` workaround noted in earlier
   tickets' retros is no longer required going forward; existing tests that
   still set it are unaffected by the change.
+- Every new test file gets its own setup/cleanup scoped to its own fixture
+  prefix. Do not rely on another test's teardown or ordering.
+  CHECK: run the new test file alone, and filtered with -k, before claiming
+  done.
 
 ## See also
 
