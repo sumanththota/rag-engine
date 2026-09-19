@@ -487,3 +487,88 @@ for exactly that, instructed to make only these two new tests pass and touch not
 else. Per the human's instruction, criteria 1-3's prior "pass" is not being taken as
 settled — these two new tests are the acceptance bar for Finding 1, not a re-run of
 the old ones alone.
+
+## Session 5 — 2026-09-19T22:00:00Z (Pass 5 — Security Fix)
+
+**Start time:** 2026-09-19T22:00:00Z
+
+**Objective:** Fix cross-user write vulnerability (Finding 1, verifier-identified):
+- User B could inject messages into User A's thread by supplying A's thread_id
+- A deleted thread could be "resurrected" with new messages via stale thread_id
+
+**Root cause:** `chat_start` and `chat_stream` accepted ANY thread_id without ownership/soft-delete check. `write_message` had no SQL-level guard.
+
+**Fix deployed:**
+
+1. **chat_start (lines 592-610):** 
+   - Changed from: `if raw_thread_id: thread_id = int(raw_thread_id)`
+   - Changed to: validate via `thread_store.get_thread(proposed_thread_id, user.id)`
+   - If get_thread returns None (wrong owner/soft-deleted/nonexistent), mint fresh thread instead
+   - Effect: User B's supplied thread_id_a returns None → B gets fresh thread, not A's
+
+2. **chat_stream (lines 648-655):**
+   - Applied identical validation before accepting client-supplied thread_id
+   - Effect: Blocks User B from writing to A's thread via direct /chat/stream call
+
+3. **ThreadStore.write_message (app/threads.py, lines 124-155):**
+   - Added optional `user_id` parameter
+   - Added SQL-level guard: only insert if thread exists, owned by user, not soft-deleted
+   - Defense-in-depth: protects against bypassed route-level checks
+   - Returns ThreadsError if ownership/soft-delete validation fails
+
+4. **write_threads call sites (app/main.py, lines 824-842):**
+   - Updated both `write_message()` calls to pass `user_id=user.id`
+   - Ensures SQL-level guard always validates on actual writes
+
+**Test results:**
+
+Run 1: `pytest -q tests/test_threads.py -k "cross_user or soft_deleted_thread"`
+```
+..                                                                       [100%]
+2 passed, 5 deselected in 0.64s
+```
+
+Run 2: `pytest -q` (full suite, consecutive x3)
+```
+Run 1: ........................................................................ [ 63%]
+.........................................                                [100%]
+113 passed in 3.52s
+
+Run 2: ........................................................................ [ 63%]
+.........................................                                [100%]
+113 passed in 3.35s
+
+Run 3: ........................................................................ [ 63%]
+.........................................                                [100%]
+113 passed in 3.39s
+```
+
+Individual security test runs:
+```
+$ pytest -q tests/test_threads.py::test_cross_user_cannot_write_into_another_users_thread tests/test_threads.py::test_cannot_write_into_soft_deleted_thread
+..                                                                       [100%]
+2 passed in 0.64s
+```
+
+**Verification:**
+- ✓ `test_cross_user_cannot_write_into_another_users_thread` — PASS (was failing)
+  - User B supplies User A's thread_id to chat_start → gets fresh thread instead
+  - User B attempts /chat/stream to A's thread_id → writes rejected at SQL level
+  - A's thread message count unchanged (2 before, 2 after B's attempt)
+  - B's thread list doesn't include A's thread_id
+  
+- ✓ `test_cannot_write_into_soft_deleted_thread` — PASS (was failing)
+  - User creates thread, deletes it, then supplies deleted thread_id to chat_start
+  - chat_start mints fresh thread (get_thread(deleted_id, user_id) returns None)
+  - chat_stream also blocks write (SQL-level check fails)
+  - Deleted thread's message count unchanged
+
+- ✓ Full suite: 113 passed, 0 failed (3x consecutive runs)
+- ✓ No regressions to existing tests
+
+**Scope check:** Only modified:
+- `app/main.py` — chat_start/chat_stream ownership validation
+- `app/threads.py` — write_message user_id guard + SQL check
+- (No changes to tests, templates, or other files)
+
+**Commit:** ab52f0f (impl/11-persist-threads)
