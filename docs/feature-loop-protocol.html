@@ -557,18 +557,20 @@ Run once, then exit (a fresh context restarts you next tick).
 4. PICK EXACTLY ONE ready DAG step (all depends_on merged; label `ready-for-agent`).
    If none ready, STOP.
 5. ADVANCE ONE STEP based on state:
-   - ready-for-agent  -&gt; open draft PR early (the verifier posts its verdict there; with
-     no PR the verdict has to travel through a human clipboard and gets paraphrased);
-     create branch impl/&lt;id&gt;-* yourself (subagent worktrees get temporary worktree-*
-     branches and will not land on impl/ on their own); spawn IMPLEMENTER (cheap model,
-     isolation: worktree) and CONFIRM `git worktree list` gained an entry — isolation
-     only fires for a dispatched subagent, so a directly-run session silently shares
-     your working directory with every other agent. Instruct: touch only owned
-     regions; use test-&lt;id&gt;-* fixtures; do NOT boot the shared dev server on :8080 —
-     verify via pytest, spinning up a test instance on an ephemeral port where a
-     criterion needs one; stamp a start time in the first journal entry and append one
-     entry per iteration; set label agent:gate-pending ONLY with every self-test green.
-   - agent:gate-pending -&gt; THREE CHECKS FIRST; fail any and label agent:blocked:
+   - ready-for-agent  -&gt; create branch impl/&lt;id&gt;-* yourself (subagent worktrees get
+     temporary worktree-* branches and will not land on impl/ on their own); push it with
+     `git push -u origin impl/&lt;id&gt;-*` (the branch must exist on the remote before a PR can
+     be opened against it); open draft PR early (the verifier posts its verdict there;
+     with no PR the verdict has to travel through a human clipboard and gets paraphrased);
+     spawn IMPLEMENTER (cheap model, isolation: worktree) and CONFIRM `git worktree list`
+     gained an entry — isolation only fires for a dispatched subagent, so a directly-run
+     session silently shares your working directory with every other agent. Instruct:
+     touch only owned regions; use test-&lt;id&gt;-* fixtures; do NOT boot the shared dev
+     server on :8080 — verify via pytest, spinning up a test instance on an ephemeral
+     port where a criterion needs one; stamp a start time in the first journal entry and
+     append one entry per iteration; set label agent:gate-pending ONLY with every
+     self-test green.
+   - agent:gate-pending -&gt; FOUR CHECKS FIRST; fail any and label agent:blocked:
      (a) `git diff --name-only master...impl/&lt;id&gt;-*` — every path must fall inside the
          owned regions named in LOOP.md. An out-of-region edit is an escalation trigger,
          not something the implementer may justify in the journal and carry on from.
@@ -584,16 +586,48 @@ Run once, then exit (a fresh context restarts you next tick).
          a mechanical check on imports and calls, not a read of test quality. Found live
          on #11: six green tests, all calling ThreadStore directly, zero touching a
          route — four of six criteria were untested at the level they were written.
+     (d) for any criterion whose verify_via names a UI behavior with no JS test harness
+         available in this repo (check: no playwright/jest/selenium config present), a
+         pytest cannot be the acceptance evidence. Require instead, in this order:
+           1. A static grep confirming the relevant JS function calls the required route.
+              Absence is a definite fail. Presence is necessary but not sufficient.
+           2. A pytest asserting the route's response actually contains the data the JS
+              needs to read — proves the API contract, not the UI behavior itself.
+           3. A manual check with pasted actual output (console log, screenshot, or
+              response body) in the journal — not "confirmed working." Self-report of
+              a browser check is not evidence; the artifact of the check is. The
+              ORCHESTRATOR runs this one (the implementer has no browser): start
+              `preview_start` config `flp-test-instance` (port 8099, never :8080),
+              drive it with the built-in browser, and post the raw output BOTH in the
+              journal and as a PR comment headed "orchestrator browser evidence (check
+              (d) level 3)" — the verifier cannot read journal.md but can read the PR.
+              Stop the instance afterwards.
+         All three, not the first one alone. This repo has no JS test harness at all —
+         that gap itself is a standing item, not something to route around silently.
      Then spawn VERIFIER (strong model, on verify/&lt;id&gt;-*, Write and Edit disallowed). Run verifier_command. The VERIFIER posts its own raw
      verdict to the PR with gh — you must not relay it, since you only receive its summary
      and relaying would paraphrase the thing that gates the merge.
      PASS -&gt; label agent:verified, mark PR ready. NEEDS_WORK -&gt; label agent:in-progress.
+     A criterion marked BLOCKED-ON-&lt;id&gt; in LOOP.md is excluded from the gate-pending and
+     PASS tests only under that LOOP.md's carve-out conditions; the PR must not say
+     `Closes #N` while one is open. Reaching agent:verified with one open is still a
+     stop-and-report for the human, never a merge.
    - agent:verified -&gt; before merging, confirm verify/&lt;id&gt;-* has an EMPTY diff against
      impl/&lt;id&gt;-*; a verifier that edited anything has invalidated its own verdict.
      Then (human, or auto if within blast-radius policy) merge; on merge, re-evaluate DAG:
      any issue whose depends_on are all merged -&gt; label ready-for-agent.
      Write retro.md; update INDEX.md; promote checked learnings into CONVENTIONS.md.
-6. STOP CONDITIONS (hard): count this feature's journal entries as iterations; if
+6. VERIFY EVERY PUSH (standing, permanent — applies after ANY agent, implementer or
+   verifier, claims work is committed/pushed): never trust the claim. Check origin
+   directly:
+     git ls-remote origin &lt;branch&gt; | cut -f1
+     git rev-parse &lt;branch&gt;
+   These must match. If they don't, push it yourself before proceeding. This has now
+   failed 3 distinct ways on #11 alone — wrong branch entirely, right branch never
+   pushed, verify branch not fast-forwarded — each one invisible from the agent's own
+   report. Treat "pushed" as unverified until confirmed against origin, every single
+   time, for every agent.
+7. STOP CONDITIONS (hard): count this feature's journal entries as iterations; if
    max_iterations is exceeded, or any escalation_trigger fired, label agent:blocked, write
    the reason to journal.md, and STOP for a human. Nothing measures max_tokens or
    wall_clock — read them off the journal yourself at each tick.
@@ -606,6 +640,11 @@ Never advance more than one step. Never let the implementer's "tests pass" be th
 <pre>You are the IMPLEMENTER for one Feature Loop Protocol ticket. You do NOT decide whether
 your own work is accepted — a separate verifier does, and it will not read your reasoning
 or your journal. Evidence only.
+
+0. Your worktree has tracked files plus .env only — no .venv (never copied; its absolute
+   paths break). Before anything else: `python -m venv .venv &amp;&amp; .venv/bin/pip install -e ".[dev]"`,
+   then `.venv/bin/pytest -q` must be green on that fresh venv. If it is red before you
+   have touched anything, stop and flag it — do not start work on a red baseline.
 
 1. Read .loop/&lt;id&gt;/LOOP.md. Touch only the owned regions it names. An edit outside them
    is an escalation trigger — stop and flag it, do not justify it in the journal and
@@ -636,7 +675,13 @@ or your journal. Evidence only.
 
 6. Set agent:gate-pending ONLY when every self-test is green AND every verify_via:
    HTTP/UI criterion has a test that actually exercises that surface. If a criterion
-   is still unmet, say so in the journal and stay in-progress.
+   is still unmet, say so in the journal and stay in-progress. The ONLY exception is a
+   criterion whose LOOP.md entry is marked BLOCKED-ON-&lt;id&gt; (a dependency not yet merged):
+   it does not hold up gate-pending, but only if LOOP.md's carve-out conditions are met
+   and the journal states "BLOCKED-ON-&lt;id&gt;, not met". Never mark such a criterion met.
+   If a UI criterion needs a browser check, do NOT attempt one and do NOT boot a server
+   — the orchestrator produces that evidence; your job is the code, the static-grep
+   evidence and the route-level tests.
 
 7. Do not open a PR, do not run the verifier, do not label agent:verified. That
    separation is the whole point — hand off, don't self-certify.</pre>
@@ -661,13 +706,22 @@ this gate exists to remove. You get the criteria, the diff, and the test runner.
    scope, run the FULL suite. A scoped command cannot evidence an unscoped claim.
 5. Any criterion you cannot make FAIL under a wrong implementation is not a real check —
    flag it as untestable rather than passing it.
-6. Begin your reply with exactly PASS or NEEDS_WORK on its own line.
+6. A criterion that LOOP.md marks BLOCKED-ON-&lt;id&gt; is neither a pass nor a failure: report
+   it on its own line as "BLOCKED-ON-&lt;id&gt; (unmet)", and give PASS/NEEDS_WORK on the
+   remaining criteria only. Never fold it into "all criteria met". Unmarked criteria
+   have no such exemption. For UI criteria, browser evidence comes from the orchestrator
+   as a PR comment headed "orchestrator browser evidence"; repeat check (d) levels 1
+   and 2 yourself and treat that comment as level-3 input, not as proof you skip.
+   Begin your reply with exactly PASS or NEEDS_WORK on its own line.
    On NEEDS_WORK, list the failing criterion + the raw output; that becomes the
    implementer's next prompt.
 7. Do not paraphrase failures into "mostly passing." The raw verdict gates the merge.
 8. Post the verdict to the PR yourself: `gh pr comment &lt;n&gt; --body-file -`. Do not hand it
    back for someone else to relay — your caller receives only a summary of you, and a
-   summarised verdict is a paraphrased one.</pre>
+   summarised verdict is a paraphrased one.
+
+Never boot the shared dev server on :8080 — verify via pytest only, on a test instance
+bound to an ephemeral port if a criterion needs a live server.</pre>
   </div>
 </section>
 

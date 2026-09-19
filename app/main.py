@@ -975,6 +975,9 @@ def create_app(
             logger.warning("delete_thread failed err=%s", err, extra={"stage": "http"})
             return JSONResponse({"error": "failed to delete thread"}, status_code=500)
 
+    # region: threads-sync (#12) -- only ticket #12 edits between these markers
+    # endregion: threads-sync
+
     # ---- traces review (ticket 4) ---------------------------------------
 
     @app.get("/traces")
@@ -1108,6 +1111,9 @@ def create_app(
             if user is None:
                 return JSONResponse({"user": None})
             return JSONResponse({"user": {"id": user.id, "email": user.email}})
+
+        # region: google-oauth (#10) -- only ticket #10 edits between these markers
+        # endregion: google-oauth
 
     return app
 

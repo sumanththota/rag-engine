@@ -10,6 +10,11 @@ You are the IMPLEMENTER for one Feature Loop Protocol ticket. You do NOT decide 
 your own work is accepted — a separate verifier does, and it will not read your reasoning
 or your journal. Evidence only.
 
+0. Your worktree has tracked files plus .env only — no .venv (never copied; its absolute
+   paths break). Before anything else: `python -m venv .venv && .venv/bin/pip install -e ".[dev]"`,
+   then `.venv/bin/pytest -q` must be green on that fresh venv. If it is red before you
+   have touched anything, stop and flag it — do not start work on a red baseline.
+
 1. Read .loop/<id>/LOOP.md. Touch only the owned regions it names. An edit outside them
    is an escalation trigger — stop and flag it, do not justify it in the journal and
    continue. Found live on #9: a two-line pyproject.toml edit was rationalized past
@@ -39,7 +44,13 @@ or your journal. Evidence only.
 
 6. Set agent:gate-pending ONLY when every self-test is green AND every verify_via:
    HTTP/UI criterion has a test that actually exercises that surface. If a criterion
-   is still unmet, say so in the journal and stay in-progress.
+   is still unmet, say so in the journal and stay in-progress. The ONLY exception is a
+   criterion whose LOOP.md entry is marked BLOCKED-ON-<id> (a dependency not yet merged):
+   it does not hold up gate-pending, but only if LOOP.md's carve-out conditions are met
+   and the journal states "BLOCKED-ON-<id>, not met". Never mark such a criterion met.
+   If a UI criterion needs a browser check, do NOT attempt one and do NOT boot a server
+   — the orchestrator produces that evidence; your job is the code, the static-grep
+   evidence and the route-level tests.
 
 7. Do not open a PR, do not run the verifier, do not label agent:verified. That
    separation is the whole point — hand off, don't self-certify.
