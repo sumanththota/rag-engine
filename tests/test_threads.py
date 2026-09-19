@@ -708,25 +708,71 @@ async def test_cannot_access_other_users_thread_via_http():
 async def test_anonymous_chat_does_not_write_threads():
     """Criterion 6: anonymous (no login) chat must not write to threads or
     thread_messages, and must not receive a thread_id — including when a request
-    tries to spoof one directly on /chat/stream.
+    names a REAL, existing thread_id directly on /chat/stream.
 
     Round-4 verifier Finding 2: the prior version of this test never called
     /chat/stream (only /chat/start, which alone writes nothing) and never counted
-    rows, so a mutant that let anonymous /chat/start create a thread under another
-    user still passed it; its one thread_id assertion also sat behind `if match:`,
-    which this rewrite removes (CONVENTIONS.md §7)."""
+    rows; its one thread_id assertion also sat behind `if match:` (CONVENTIONS.md
+    §7). Fixed in the previous round by driving /chat/stream and counting rows.
+
+    Round-5 verifier Finding A: that fix was still unfalsifiable — it spoofed
+    thread_id=999999999, an id that can never exist, so (a) a mutant where
+    anonymous /chat/stream writes into a supplied thread_id passes anyway (the
+    write fails silently, thread_id refers to nothing), and (b) a mutant where
+    anonymous /chat/start creates a thread row under some other/made-up user_id
+    only gets caught by luck — a foreign-key violation blocks the insert on an
+    empty DB regardless of whether the code is right. Fixed here by seeding a
+    REAL user and a REAL thread first, then pointing the anonymous requests at
+    that real id — only a correct implementation can leave it untouched."""
     pool = await _pool()
     auth_store = AuthStore(pool)
     thread_store = ThreadStore(pool)
+    owner_email = "test-11-anon-target-owner@example.com"
 
     try:
         await auth_store.ensure_schema()
         await thread_store.ensure_schema()
+        await _cleanup(pool, owner_email)
 
         app = _app_with_fake_llm(auth_store, thread_store, pool, tokens=["anon", " answer"])
 
+        # ---- Seed a real owner with a real thread (and a real message in it) ----
+        async with _async_client(app) as owner_client:
+            signup = await owner_client.post(
+                "/signup", json={"email": owner_email, "password": "test123"}
+            )
+            assert signup.status_code == 201
+            owner_id = signup.json()["id"]
+            await owner_client.post(
+                "/login", json={"email": owner_email, "password": "test123"}
+            )
+
+            owner_start = await owner_client.post(
+                "/chat/start",
+                data={"question": "owner question", "model_id": "ollama_gemma4_26b"},
+            )
+            owner_thread_id = _thread_id_from_chat_start_html(owner_start.text)
+            assert owner_thread_id is not None and owner_thread_id > 0
+
+            owner_stream = await owner_client.get(
+                "/chat/stream",
+                params={
+                    "question": "owner question",
+                    "model_id": "ollama_gemma4_26b",
+                    "started_at_ms": "0",
+                    "trace_id": "test-11-trace-owner",
+                    "thread_id": str(owner_thread_id),
+                },
+            )
+            assert owner_stream.status_code == 200
+
+        detail_before = await thread_store.get_thread(owner_thread_id, owner_id)
+        assert detail_before is not None
+        messages_before = len(detail_before.messages)
+        assert messages_before == 2, messages_before
         check_start = await pool.fetchval("SELECT now()")
 
+        # ---- Anonymous client (separate session, no cookies from the owner) ----
         async with _async_client(app) as client:
             start = await client.post(
                 "/chat/start",
@@ -752,8 +798,8 @@ async def test_anonymous_chat_does_not_write_threads():
             )
             assert stream.status_code == 200
 
-            # A spoofed thread_id straight on chat/stream must not let an
-            # anonymous request write into (or create) any thread either.
+            # Names a REAL, existing thread (the owner's) — not an id that can
+            # never exist — so a write here would actually land somewhere real.
             spoofed = await client.get(
                 "/chat/stream",
                 params={
@@ -761,7 +807,7 @@ async def test_anonymous_chat_does_not_write_threads():
                     "model_id": "ollama_gemma4_26b",
                     "started_at_ms": "0",
                     "trace_id": "test-11-trace-anon-2",
-                    "thread_id": "999999999",
+                    "thread_id": str(owner_thread_id),
                 },
             )
             assert spoofed.status_code == 200
@@ -769,6 +815,16 @@ async def test_anonymous_chat_does_not_write_threads():
             # Verify: GET /threads as anonymous should return 401
             threads_resp = await client.get("/threads")
             assert threads_resp.status_code == 401, "Anonymous GET /threads should return 401"
+
+        # The owner's real thread must be completely untouched by the anonymous
+        # requests that named its id.
+        detail_after = await thread_store.get_thread(owner_thread_id, owner_id)
+        assert detail_after is not None
+        assert len(detail_after.messages) == messages_before, (
+            "anonymous request wrote into a real, existing thread it named: "
+            f"had {messages_before} messages, now {len(detail_after.messages)}: "
+            f"{[m.content for m in detail_after.messages]}"
+        )
 
         # No thread_messages row anywhere carrying this test's marker content —
         # immune to concurrent activity from other parallel tickets on the shared
@@ -788,4 +844,70 @@ async def test_anonymous_chat_does_not_write_threads():
             f"anonymous chat created {new_threads} threads row(s) during this test"
         )
     finally:
+        await _cleanup(pool, owner_email)
         await pool.close()
+
+
+# ---- Round-5 verifier Finding B: oversized thread_id must 404, not crash -----
+
+
+async def test_oversized_thread_id_returns_404_not_500():
+    """An out-of-range thread_id (too large for Postgres bigint) must be
+    rejected with 404, not crash the whole turn with an unhandled 500.
+
+    Round-5 verifier Finding B: the ownership-check call site around
+    thread_store.get_thread() only caught ValueError (from int() rejecting
+    non-numeric input) — a numeric-but-out-of-range id parses fine in Python
+    (arbitrary precision ints) but raises ThreadsError once it hits Postgres,
+    which propagated uncaught out of both /chat/start and /chat/stream."""
+    pool = await _pool()
+    auth_store = AuthStore(pool)
+    thread_store = ThreadStore(pool)
+    email = "test-11-oversized-id@example.com"
+    oversized_id = "99999999999999999999"  # exceeds bigint range (max ~9.2e18)
+
+    try:
+        await auth_store.ensure_schema()
+        await thread_store.ensure_schema()
+        await _cleanup(pool, email)
+
+        app = _app_with_fake_llm(auth_store, thread_store, pool, tokens=["ab"])
+        # raise_app_exceptions=False so an unhandled exception in the app comes
+        # back as a real response with a status code, not a raised exception in
+        # the test itself — needed to observe the current 500 at all.
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            signup = await client.post(
+                "/signup", json={"email": email, "password": "test123"}
+            )
+            assert signup.status_code == 201
+            await client.post("/login", json={"email": email, "password": "test123"})
+
+            start = await client.post(
+                "/chat/start",
+                data={
+                    "question": "q",
+                    "model_id": "ollama_gemma4_26b",
+                    "thread_id": oversized_id,
+                },
+            )
+            assert start.status_code == 404, (
+                f"oversized thread_id on /chat/start must return 404, got {start.status_code}"
+            )
+
+            stream = await client.get(
+                "/chat/stream",
+                params={
+                    "question": "q",
+                    "model_id": "ollama_gemma4_26b",
+                    "started_at_ms": "0",
+                    "trace_id": "test-11-trace-oversized",
+                    "thread_id": oversized_id,
+                },
+            )
+            assert stream.status_code == 404, (
+                f"oversized thread_id on /chat/stream must return 404, got {stream.status_code}"
+            )
+    finally:
+        await _cleanup(pool, email)
