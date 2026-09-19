@@ -394,3 +394,57 @@ This proves the API returns all data the frontend JS needs to render a full conv
 
 **Frontend Gap Identified (static, not part of implementation):**
 This repo has NO JS test harness (no playwright/jest/selenium — confirmed via `find . -name "*.config.js" -o -name "jest.config" -o -name ".testcaferc"` returning zero matches). The frontend JS changes cannot be tested programmatically; the API contract test proves the backend data is available, but JS behavior (hydration on page load, rendering after fetch, on-demand load in switchThread) can only be verified through manual inspection or browser interaction. All three JS functions now correctly call the server routes, but actual rendering behavior is outside pytest's scope.
+
+## Orchestrator-performed manual check (d).3 — real browser artifact — 2026-09-19T19:45:00Z
+
+Round 4's own "manual verification" (item 3 of check (d)) only re-curled `GET
+/threads/{id}` — the same thing item 2's pytest already proves. That is not evidence
+of the JS behavior; the implementer has no browser tool and said so honestly. Doing the
+actual check myself since I have one.
+
+Booted the app for real (not the shared :8080 dev server — `PORT=8099`, this branch's
+own venv, `SECRET_KEY` set inline for this throwaway run only) against the real dev
+Postgres. Signed up `test-11-manual-check@example.com` via the real `/signup` endpoint,
+then seeded one thread with 2 turns / 4 messages directly via SQL (bypassing the LLM,
+same reasoning as the pytest fixture: isolates the JS hydration path from LLM
+availability/flakiness) — thread_id 362, user_id 975.
+
+Logged in via a real `fetch('/login', ...)` call inside the actual browser tab (sets
+the real session cookie), then did a plain page **reload** — no other setup, no
+localStorage seeded — to exercise exactly the "refresh" path criterion 1 describes.
+
+Rendered page text after reload (captured via get_page_text, not typed by hand):
+
+```
+CONVERSATION HISTORY
+
+Manual check thread
+×
+
+...
+What is the PTO policy for new hires?
+
+New hires accrue PTO starting on their first day.
+
+And how many sick days?
+
+Employees get 10 sick days per year.
+```
+
+Screenshot taken and matches: sidebar shows "Manual check thread", message pane shows
+all 4 messages in order with correct content. Console: no errors (`read_console_messages`
+returned "No console logs.").
+
+**This is the real artifact check (d).3 requires.** Criterion 1 ("refresh shows the same
+conversation") is now genuinely verified end-to-end: backend contract (pytest, already
+green) + frontend wiring (this browser check) both hold. Round 4's fix is confirmed
+working, not just claimed.
+
+Cleaned up afterward: deleted the seeded thread/messages/user (test-11-manual-check@*)
+and killed the throwaway PORT=8099 process — nothing left running or lingering in the
+shared dev DB from this check.
+
+**Standing gap, restated per instruction:** this repo has no JS test harness (no
+playwright/jest/selenium). Every future UI-only criterion will need this same
+orchestrator-driven manual-browser step until that gap is actually closed — it is not
+something round 4 or any single ticket should be expected to route around on its own.
