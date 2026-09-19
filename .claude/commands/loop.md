@@ -54,13 +54,23 @@ Run once, then exit (a fresh context restarts you next tick).
               needs to read — proves the API contract, not the UI behavior itself.
            3. A manual check with pasted actual output (console log, screenshot, or
               response body) in the journal — not "confirmed working." Self-report of
-              a browser check is not evidence; the artifact of the check is.
+              a browser check is not evidence; the artifact of the check is. The
+              ORCHESTRATOR runs this one (the implementer has no browser): start
+              `preview_start` config `flp-test-instance` (port 8099, never :8080),
+              drive it with the built-in browser, and post the raw output BOTH in the
+              journal and as a PR comment headed "orchestrator browser evidence (check
+              (d) level 3)" — the verifier cannot read journal.md but can read the PR.
+              Stop the instance afterwards.
          All three, not the first one alone. This repo has no JS test harness at all —
          that gap itself is a standing item, not something to route around silently.
      Then spawn VERIFIER (strong model, on verify/<id>-*, Write and Edit disallowed). Run verifier_command. The VERIFIER posts its own raw
      verdict to the PR with gh — you must not relay it, since you only receive its summary
      and relaying would paraphrase the thing that gates the merge.
      PASS -> label agent:verified, mark PR ready. NEEDS_WORK -> label agent:in-progress.
+     A criterion marked BLOCKED-ON-<id> in LOOP.md is excluded from the gate-pending and
+     PASS tests only under that LOOP.md's carve-out conditions; the PR must not say
+     `Closes #N` while one is open. Reaching agent:verified with one open is still a
+     stop-and-report for the human, never a merge.
    - agent:verified -> before merging, confirm verify/<id>-* has an EMPTY diff against
      impl/<id>-*; a verifier that edited anything has invalidated its own verdict.
      Then (human, or auto if within blast-radius policy) merge; on merge, re-evaluate DAG:
