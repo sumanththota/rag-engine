@@ -1083,6 +1083,15 @@ def create_app(
                 user = await auth_store.create_user_with_password(body.email, body.password)
             except AuthError as err:
                 logger.info("signup failed err=%s", err, extra={"stage": "http"})
+                # Check if this is a Google-only email (criterion 4)
+                try:
+                    if await auth_store.is_google_only_user(body.email):
+                        return JSONResponse(
+                            {"error": "this email is registered with Google sign-in"},
+                            status_code=409
+                        )
+                except AuthError:
+                    pass
                 return JSONResponse({"error": "email already registered"}, status_code=409)
             return JSONResponse({"id": user.id, "email": user.email}, status_code=201)
 
@@ -1113,6 +1122,81 @@ def create_app(
             return JSONResponse({"user": {"id": user.id, "email": user.email}})
 
         # region: google-oauth (#10) -- only ticket #10 edits between these markers
+
+        from authlib.integrations.starlette_client import OAuth, OAuthError
+        from starlette.middleware.sessions import SessionMiddleware
+
+        # Hazard 1: SessionMiddleware defaults to "session" (same as our auth cookie)
+        # Register with a different name to avoid clobbering our auth cookie.
+        app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, session_cookie="oauth_state")
+
+        # OAuth setup for Google (Hazard 2: explicit URLs, no server_metadata_url)
+        if settings.google_client_id and settings.google_client_secret and settings.google_redirect_uri:
+            oauth = OAuth()
+            oauth.register(
+                name="google",
+                client_id=settings.google_client_id,
+                client_secret=settings.google_client_secret,
+                authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+                access_token_url="https://oauth2.googleapis.com/token",
+                jwks_uri="https://www.googleapis.com/oauth2/v3/certs",
+                # Hazard 5: `openid` scope is what makes authlib generate a nonce and Google return an
+                # id_token; without it token["userinfo"] is never set and every real sign-in would 400.
+                client_kwargs={"scope": "openid email profile", "code_challenge_method": "S256"},
+            )
+
+            @app.get("/auth/google/login")
+            async def google_login(request: Request) -> RedirectResponse:
+                """Redirect to Google's consent screen with PKCE and state."""
+                if not settings.google_redirect_uri:
+                    return PlainTextResponse("Google OAuth not configured", status_code=500)
+                redirect_uri = settings.google_redirect_uri
+                return await oauth.google.authorize_redirect(request, redirect_uri)
+
+            @app.get("/auth/google/callback")
+            async def google_callback(request: Request):
+                """Handle Google's OAuth callback: validate state, verify email, set session cookie."""
+                try:
+                    # authorize_access_token validates state (Hazard 2: NOT mocked in tests for criterion 2)
+                    token = await oauth.google.authorize_access_token(request)
+                except OAuthError as err:
+                    # Hazard 3: catch OAuthError (includes MismatchingStateError)
+                    logger.warning("google callback OAuthError: %s", err, extra={"stage": "http"})
+                    return JSONResponse({"error": "authorization failed"}, status_code=400)
+
+                # Get user info from authorize_access_token's parsed id_token (email, email_verified)
+                # authorize_access_token already validates and parses the id_token, returning userinfo in token["userinfo"]
+                userinfo = token.get("userinfo", {})
+                if not userinfo:
+                    logger.warning("google callback: no userinfo in token", extra={"stage": "http"})
+                    return JSONResponse({"error": "token validation failed"}, status_code=400)
+
+                email = userinfo.get("email", "").strip().lower()
+                email_verified = userinfo.get("email_verified", False)
+
+                # Criterion 2: verify email_verified before proceeding
+                if not email_verified:
+                    logger.info("google callback: email_verified=false for %s", email, extra={"stage": "http"})
+                    return JSONResponse({"error": "email not verified"}, status_code=400)
+
+                if not email:
+                    logger.info("google callback: no email in token", extra={"stage": "http"})
+                    return JSONResponse({"error": "email required"}, status_code=400)
+
+                # Criterion 3: find_or_create_user by email (auto-merge)
+                try:
+                    user = await auth_store.find_or_create_user_with_google_identity(email, email)
+                except AuthError as err:
+                    logger.warning("google callback find_or_create failed: %s", err, extra={"stage": "http"})
+                    return JSONResponse({"error": "sign-in failed"}, status_code=500)
+
+                # Set session cookie (same as password login)
+                response = RedirectResponse(url="/?login=google", status_code=302)
+                set_session_cookie(response, settings.secret_key, user.id, secure=secure_cookie)
+
+                # Criterion 5: respond with redirect to /?login=google and Set-Cookie
+                return response
+
         # endregion: google-oauth
 
     return app

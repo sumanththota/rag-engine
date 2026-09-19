@@ -199,6 +199,85 @@ class AuthStore:
             return None
         return User(id=row["id"], email=row["email"])
 
+    async def find_or_create_user_with_google_identity(self, email: str, provider_uid: str) -> User:
+        """Find an existing user by email or create a new one, then ensure a google
+        auth_identity row exists. Returns the user if successful.
+
+        On success: user exists (possibly new) with a google auth_identity row.
+        On failure: raises AuthError (DB error, etc.).
+
+        Criterion 3 behavior: if the email already has a password identity, this
+        still succeeds — it adds the google identity to the existing user. The
+        user is not duplicated.
+        """
+        try:
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    # Try to find existing user by email
+                    user_row = await conn.fetchrow("SELECT id, email FROM users WHERE email = $1", email)
+
+                    if user_row is None:
+                        # Create new user
+                        user_row = await conn.fetchrow(
+                            "INSERT INTO users (email) VALUES ($1) RETURNING id, email",
+                            email,
+                        )
+
+                    user_id = user_row["id"]
+
+                    # Insert or ignore the google identity (UPSERT pattern)
+                    # Try to insert; if it already exists, silently ignore
+                    try:
+                        await conn.execute(
+                            """
+                            INSERT INTO auth_identities (user_id, provider, provider_uid, password_hash)
+                            VALUES ($1, 'google', $2, NULL)
+                            """,
+                            user_id,
+                            provider_uid,
+                        )
+                    except asyncpg.UniqueViolationError:
+                        # google identity already exists for this user, that's fine
+                        pass
+
+                    return User(id=user_row["id"], email=user_row["email"])
+        except _DB_ERRORS as e:
+            raise AuthError(f"find_or_create_user_with_google_identity failed for email={email!r}: {e}") from e
+
+    async def is_google_only_user(self, email: str) -> bool:
+        """Returns True if the email exists as a user AND has a google auth_identity
+        AND does NOT have a password auth_identity (password_hash is NULL for all rows).
+
+        Criterion 4: used to detect when a signup attempt targets a Google-only email.
+        """
+        try:
+            async with self._pool.acquire() as conn:
+                # Check if user exists
+                user_row = await conn.fetchrow("SELECT id FROM users WHERE email = $1", email)
+                if user_row is None:
+                    return False
+
+                user_id = user_row["id"]
+
+                # Check if user has google identity
+                google_row = await conn.fetchrow(
+                    "SELECT id FROM auth_identities WHERE user_id = $1 AND provider = 'google'",
+                    user_id,
+                )
+                if google_row is None:
+                    return False
+
+                # Check if user has password identity (password_hash is NOT NULL)
+                password_row = await conn.fetchrow(
+                    "SELECT id FROM auth_identities WHERE user_id = $1 AND provider = 'password' AND password_hash IS NOT NULL",
+                    user_id,
+                )
+
+                # Return True only if google exists AND password does NOT exist
+                return password_row is None
+        except _DB_ERRORS as e:
+            raise AuthError(f"is_google_only_user failed for email={email!r}: {e}") from e
+
 
 def make_get_current_user_optional(auth_store: AuthStore, secret_key: str):
     """Builds the `Depends(get_current_user_optional)` dependency for a
