@@ -109,3 +109,23 @@ Verify rounds used: 2 of 3. WARNING: criterion 2 has now failed in rounds 1 and 
 
 Also noted, implementer round 2: skipped mutations D (no `state`) and E (direct parse_id_token) that the prompt required, yet set gate-pending. Its journal was honest about it; the label was not warranted.
 
+
+## Implementer (Round 3, fix pass 3) — START 2026-09-19T22:36:34Z
+
+Baseline: detached HEAD 14bf366 (origin/impl/10-google-oauth), fresh venv (python 3.14.4, authlib 1.8.0), `pytest -q` -> `125 passed, 1 warning in 5.78s` before any edit.
+Read in full: verdict round 2, LOOP.md (HAZARD 4 corrected + HAZARD 5), journal tail. Plan: (1) register client_kwargs scope+S256; (2) id_token-bearing fetch mock, parse_id_token AsyncMock via authlib's internal path; (3) state-rejection tests patch fetch + assert_not_called; (4) parse_id_token awaited-once + nonce guard; (5) drop bare except Exception; then mutations A-H one at a time.
+Authlib source read (starlette_client/apps.py L136): `if "id_token" in token and "nonce" in state_data: userinfo = await self.parse_id_token(token, nonce=state_data["nonce"], ...); token["userinfo"] = userinfo`. `_format_state_params` raises MismatchingStateError when state_data is None (sync_app.py L264), before fetch_access_token.
+
+### Iteration 1 (impl changes) — 2026-09-19 ~22:50Z
+Edits: app/main.py google-oauth region: `oauth.register(..., client_kwargs={"scope": "openid email profile", "code_challenge_method": "S256"})` (moved S256 out of top-level kwarg); removed bare `except Exception` (only `except OAuthError` remains). tests/test_auth.py: google tests rebuilt (helpers `_google_network_mocks`, `_google_never_reach_network`, `_google_login_params`, `_google_sign_in`); new guard test `test_google_oauth_callback_parses_id_token_once_via_authlib_with_nonce`; criterion-4 test now builds the Google-only user via the mocked callback (closes the round-2 verify_via deviation note).
+Mocks: `fetch_access_token` (AsyncMock) returns `{access_token, token_type, id_token}` and NO `userinfo`; `parse_id_token` (AsyncMock) returns claims; `token["userinfo"]` is set by authlib's own apps.py L136 branch. State-rejection tests patch fetch+parse and assert `assert_not_called()` on both; no test can reach the network.
+Proof authlib's internal path triggers (script run, raw):
+```
+LOGIN scope: ['openid email profile'] nonce: ['UlWDJaF4lc9aW6B9biit'] method: ['S256']
+CALLBACK status: 302 location: /?login=google
+fetch_access_token call_args: call(code='test-code', state='pRcI7In1U7i1Ez52dGOa56S6VMTDQc', code_verifier='sSCjl51SEEZyD7u5sBliRvvyOAdsbe6fKTecZazsLcBb5PrP', redirect_uri='http://testserver/auth/google/callback')
+parse_id_token   call_args: call({'access_token': 'test-10-access', 'token_type': 'Bearer', 'id_token': 'test-10-id-token', 'userinfo': {...}}, nonce='UlWDJaF4lc9aW6B9biit', claims_options=None, claims_cls=None, leeway=120) await_count: 1
+```
+(`userinfo` shows inside the recorded token arg only because authlib assigns `token["userinfo"] = userinfo` on that same dict object AFTER the call; the mock's return_value never contained it. `nonce` equals the nonce in the login redirect; `leeway=120`/`claims_options` are authlib's own kwargs, i.e. the internal call.)
+Results: `pytest -q tests/test_auth.py -k google` -> `11 passed, 21 deselected, 1 warning in 1.06s`; `pytest -q` -> `126 passed, 1 warning in 4.47s`.
+Next: mutations A-H, one at a time, working-tree only, reverted after each.

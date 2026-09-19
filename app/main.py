@@ -1140,7 +1140,9 @@ def create_app(
                 authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
                 access_token_url="https://oauth2.googleapis.com/token",
                 jwks_uri="https://www.googleapis.com/oauth2/v3/certs",
-                code_challenge_method="S256",
+                # Hazard 5: `openid` scope is what makes authlib generate a nonce and Google return an
+                # id_token; without it token["userinfo"] is never set and every real sign-in would 400.
+                client_kwargs={"scope": "openid email profile", "code_challenge_method": "S256"},
             )
 
             @app.get("/auth/google/login")
@@ -1160,9 +1162,6 @@ def create_app(
                 except OAuthError as err:
                     # Hazard 3: catch OAuthError (includes MismatchingStateError)
                     logger.warning("google callback OAuthError: %s", err, extra={"stage": "http"})
-                    return JSONResponse({"error": "authorization failed"}, status_code=400)
-                except Exception as err:
-                    logger.warning("google callback unexpected error: %s", err, extra={"stage": "http"})
                     return JSONResponse({"error": "authorization failed"}, status_code=400)
 
                 # Get user info from authorize_access_token's parsed id_token (email, email_verified)

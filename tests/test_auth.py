@@ -448,8 +448,72 @@ def _app_with_google_oauth(auth_store: AuthStore, app_env: str = "development") 
     )
 
 
+# Both patch targets are the network-facing methods authlib's Starlette client inherits. State
+# validation (`authorize_access_token` -> get_state_data/_format_state_params) is NEVER patched.
+_GOOGLE_FETCH = "authlib.integrations.base_client.async_app.AsyncOAuth2Mixin.fetch_access_token"
+_GOOGLE_PARSE = "authlib.integrations.base_client.async_openid.AsyncOpenIDMixin.parse_id_token"
+
+
+def _google_network_mocks(claims: dict):
+    """Patch ONLY the network layers, shaped like the real id_token path.
+
+    fetch_access_token returns a token that CONTAINS an `id_token` and NO `userinfo`; authlib's own
+    authorize_access_token then calls parse_id_token(token, nonce=...) and stores the result in
+    token["userinfo"]. Returns (stack, mock_fetch, mock_parse); use `with stack:` around the request.
+    """
+    from contextlib import ExitStack
+    from unittest.mock import AsyncMock, patch
+
+    stack = ExitStack()
+    mock_fetch = stack.enter_context(patch(_GOOGLE_FETCH, new_callable=AsyncMock))
+    mock_parse = stack.enter_context(patch(_GOOGLE_PARSE, new_callable=AsyncMock))
+    mock_fetch.return_value = {"access_token": "test-10-access", "token_type": "Bearer", "id_token": "test-10-id-token"}
+    mock_parse.return_value = claims
+    return stack, mock_fetch, mock_parse
+
+
+def _google_never_reach_network():
+    """Patch fetch/parse for tests where they must NOT run; assert_not_called() proves state was rejected first."""
+    from contextlib import ExitStack
+    from unittest.mock import AsyncMock, patch
+
+    stack = ExitStack()
+    mock_fetch = stack.enter_context(patch(_GOOGLE_FETCH, new_callable=AsyncMock))
+    mock_parse = stack.enter_context(patch(_GOOGLE_PARSE, new_callable=AsyncMock))
+    mock_fetch.return_value = {"access_token": "must-not-be-used", "token_type": "Bearer", "id_token": "x"}
+    mock_parse.return_value = {"email": "test-10-must-not-be-used@example.com", "email_verified": True, "sub": "x"}
+    return stack, mock_fetch, mock_parse
+
+
+async def _google_login_params(client) -> dict:
+    """GET /auth/google/login (no redirect follow) and return the parsed Location query."""
+    import urllib.parse
+
+    resp = await client.get("/auth/google/login", follow_redirects=False)
+    assert resp.status_code in (302, 303, 307, 308), f"Expected redirect, got {resp.status_code}"
+    return urllib.parse.parse_qs(urllib.parse.urlparse(resp.headers["location"]).query)
+
+
+async def _google_sign_in(client, claims: dict):
+    """Login redirect, then callback with the real state; only network layers mocked.
+
+    Returns (callback_response, mock_fetch, mock_parse, login_query).
+    """
+    query = await _google_login_params(client)
+    stack, mock_fetch, mock_parse = _google_network_mocks(claims)
+    with stack:
+        resp = await client.get(
+            f"/auth/google/callback?code=test-code&state={query['state'][0]}", follow_redirects=False
+        )
+    return resp, mock_fetch, mock_parse, query
+
+
+def _auth_session_set_cookies(resp) -> list[str]:
+    return [h for h in resp.headers.get_list("set-cookie") if h.startswith("session=")]
+
+
 async def test_google_oauth_login_redirects_to_google_with_state():
-    """Criterion 1: GET /auth/google/login redirects to Google consent screen with state."""
+    """Criterion 1 (+ HAZARD 5d): GET /auth/google/login -> Google consent, non-empty state, openid scope, PKCE."""
     import urllib.parse
 
     pool = await _pool()
@@ -460,35 +524,23 @@ async def test_google_oauth_login_redirects_to_google_with_state():
         app = _app_with_google_oauth(store)
         async with _async_client(app) as client:
             resp = await client.get("/auth/google/login", follow_redirects=False)
-
-            # Should be a redirect (3xx)
             assert resp.status_code in (302, 303, 307, 308), f"Expected redirect, got {resp.status_code}"
 
-            # Should have Location header pointing to Google
-            assert "location" in resp.headers or "Location" in resp.headers
-            location = resp.headers.get("location") or resp.headers.get("Location")
+            parsed = urllib.parse.urlparse(resp.headers["location"])
+            query = urllib.parse.parse_qs(parsed.query)
 
-            # Parse the URL to extract components
-            parsed = urllib.parse.urlparse(location)
-            query_params = urllib.parse.parse_qs(parsed.query)
-
-            # Criterion 1: assert host is exactly accounts.google.com
-            assert parsed.hostname == "accounts.google.com", f"Expected host accounts.google.com, got {parsed.hostname}"
-
-            # Criterion 1: assert state is present and non-empty
-            assert "state" in query_params, "state parameter missing from Location query string"
-            state_values = query_params["state"]
-            assert len(state_values) > 0, "state parameter is empty"
-            assert len(state_values[0]) > 0, "state value is empty string"
+            assert parsed.hostname == "accounts.google.com", f"Expected accounts.google.com, got {parsed.hostname}"
+            assert query.get("state") and query["state"][0], "state missing/empty in Location query"
+            # HAZARD 5: without `openid` authlib generates no nonce and Google returns no id_token.
+            assert "openid" in query.get("scope", [""])[0].split(), f"scope must contain openid: {query.get('scope')}"
+            assert query.get("nonce") and query["nonce"][0], "nonce missing (only generated with openid scope)"
+            assert query.get("code_challenge_method") == ["S256"], "PKCE S256 challenge missing"
     finally:
         await _cleanup(pool)
 
 
 async def test_google_oauth_callback_with_valid_state_and_verified_email():
-    """Criterion 2a/5: callback with valid state and verified email -> 302 to /?login=google with session cookie."""
-    import urllib.parse
-    from unittest.mock import AsyncMock, patch
-
+    """Criteria 2a + 5: real state check, id_token path -> 302 /?login=google, exactly one `session` cookie, /me works."""
     pool = await _pool()
     store = AuthStore(pool)
     await store.ensure_schema()
@@ -497,67 +549,59 @@ async def test_google_oauth_callback_with_valid_state_and_verified_email():
     try:
         app = _app_with_google_oauth(store)
         async with _async_client(app) as client:
-            # First, visit /auth/google/login to get a state cookie set by SessionMiddleware
-            login_resp = await client.get("/auth/google/login", follow_redirects=False)
-            # Extract state from the Location header to simulate the authorization code flow
-            location = login_resp.headers.get("location") or login_resp.headers.get("Location")
-            parsed = urllib.parse.urlparse(location)
-            query_params = urllib.parse.parse_qs(parsed.query)
-            state = query_params["state"][0]  # Get the state value from the redirect
+            claims = {"email": email, "email_verified": True, "sub": "test-10-sub-valid"}
+            resp, mock_fetch, mock_parse, _ = await _google_sign_in(client, claims)
 
-            # Mock only the network layers (fetch_access_token and parse_id_token)
-            # authorize_access_token validates state and is NOT mocked
-            with patch("authlib.integrations.base_client.async_app.AsyncOAuth2Mixin.fetch_access_token") as mock_fetch, \
-                 patch("authlib.integrations.base_client.async_openid.AsyncOpenIDMixin.parse_id_token") as mock_parse:
+            assert resp.status_code == 302, f"Expected 302, got {resp.status_code}: {resp.text}"
+            assert resp.headers["location"] == "/?login=google"
 
-                # Mock fetch_access_token to return a token dict with userinfo
-                mock_fetch.return_value = {
-                    "access_token": "test-token",
-                    "token_type": "Bearer",
-                    "userinfo": {
-                        "email": email,
-                        "email_verified": True,
-                        "sub": "google-123",
-                    }
-                }
+            session_cookies = _auth_session_set_cookies(resp)
+            assert len(session_cookies) == 1, f"Expected exactly 1 `session` Set-Cookie: {resp.headers.get_list('set-cookie')}"
 
-                # Mock parse_id_token (called by authorize_access_token internally)
-                mock_parse.return_value = {
-                    "email": email,
-                    "email_verified": True,
-                    "sub": "google-123",
-                }
+            # State validation ran and handed the stored PKCE verifier + code to the token exchange.
+            mock_fetch.assert_awaited_once()
+            assert mock_fetch.await_args.kwargs.get("code") == "test-code"
+            assert mock_fetch.await_args.kwargs.get("code_verifier"), "PKCE code_verifier from state data not forwarded"
+            # userinfo reached the route via authlib's own parse_id_token call.
+            mock_parse.assert_awaited_once()
 
-                # Invoke callback with the state code
-                callback_resp = await client.get(
-                    f"/auth/google/callback?code=test-code&state={state}",
-                    follow_redirects=False
-                )
+            me_resp = await client.get("/me")
+            assert me_resp.status_code == 200
+            assert me_resp.json()["user"]["email"] == email
+    finally:
+        await _cleanup(pool, email)
 
-                # Criterion 5: assert 302
-                assert callback_resp.status_code == 302, f"Expected 302, got {callback_resp.status_code}"
 
-                # Criterion 5: assert Location == '/?login=google'
-                callback_location = callback_resp.headers.get("location") or callback_resp.headers.get("Location")
-                assert callback_location == "/?login=google", f"Expected /?login=google, got {callback_location}"
+async def test_google_oauth_callback_parses_id_token_once_via_authlib_with_nonce():
+    """HAZARD 4 guard: parse_id_token awaited EXACTLY ONCE (by authlib, not the route) and with the login nonce."""
+    pool = await _pool()
+    store = AuthStore(pool)
+    await store.ensure_schema()
+    email = "test-10-google-once@example.com"
 
-                # Criterion 2a & 5: assert EXACTLY ONE Set-Cookie named 'session' on this response
-                set_cookie_headers = callback_resp.headers.get_list("set-cookie")
-                session_cookies = [h for h in set_cookie_headers if h.startswith("session=")]
-                assert len(session_cookies) == 1, f"Expected exactly 1 Set-Cookie named session, got {len(session_cookies)}: {set_cookie_headers}"
+    try:
+        app = _app_with_google_oauth(store)
+        async with _async_client(app) as client:
+            claims = {"email": email, "email_verified": True, "sub": "test-10-sub-once"}
+            resp, mock_fetch, mock_parse, login_query = await _google_sign_in(client, claims)
 
-                # Criterion 2a: assert the session cookie authenticates at GET /me
-                me_resp = await client.get("/me")
-                assert me_resp.status_code == 200
-                me_data = me_resp.json()
-                assert me_data["user"] is not None
-                assert me_data["user"]["email"] == email
+            assert resp.status_code == 302, f"Expected 302, got {resp.status_code}: {resp.text}"
+            # A route that calls parse_id_token itself makes this 2 (and without a nonce).
+            assert mock_parse.await_count == 1, f"parse_id_token awaited {mock_parse.await_count}x, expected exactly 1"
+            call = mock_parse.await_args
+            nonce = call.kwargs.get("nonce") if "nonce" in call.kwargs else (call.args[1] if len(call.args) > 1 else None)
+            assert nonce, f"parse_id_token call carried no nonce: {call}"
+            assert nonce == login_query["nonce"][0], "nonce passed to parse_id_token is not the one sent to Google"
+            # The token handed to it is the one fetch_access_token returned (has id_token, no userinfo pre-injected).
+            token_arg = call.args[0]
+            assert token_arg["id_token"] == "test-10-id-token"
+            mock_fetch.assert_awaited_once()
     finally:
         await _cleanup(pool, email)
 
 
 async def test_google_oauth_callback_rejects_missing_state():
-    """Criterion 2b: missing state -> 4xx, no auth cookie."""
+    """Criterion 2b: no state -> 4xx JSON, token exchange never attempted, no auth cookie."""
     pool = await _pool()
     store = AuthStore(pool)
     await store.ensure_schema()
@@ -565,24 +609,24 @@ async def test_google_oauth_callback_rejects_missing_state():
     try:
         app = _app_with_google_oauth(store)
         async with _async_client(app) as client:
-            # Request callback without state parameter (this should fail state validation)
-            resp = await client.get("/auth/google/callback?code=test-code", follow_redirects=False)
+            stack, mock_fetch, mock_parse = _google_never_reach_network()
+            with stack:
+                resp = await client.get("/auth/google/callback?code=test-code", follow_redirects=False)
 
-            # Should be a client error (not 500)
             assert 400 <= resp.status_code < 500, f"Expected 4xx for missing state, got {resp.status_code}"
-
-            # Should NOT have set session cookie
-            set_cookie_headers = resp.headers.get_list("set-cookie")
-            session_cookies = [h for h in set_cookie_headers if h.startswith("session=") and "Max-Age=2592000" in h]
-            assert len(session_cookies) == 0, f"Should not have set auth session cookie, got: {set_cookie_headers}"
+            assert resp.json() == {"error": "authorization failed"}
+            # If the state check were removed these would have been called (or hit Google's live endpoint).
+            mock_fetch.assert_not_called()
+            mock_parse.assert_not_called()
+            assert _auth_session_set_cookies(resp) == [], "auth cookie must not be set on state failure"
+            me = await client.get("/me")
+            assert me.json()["user"] is None
     finally:
         await _cleanup(pool)
 
 
 async def test_google_oauth_callback_rejects_mismatched_state():
-    """Criterion 2b: mismatched state -> 4xx, no auth cookie."""
-    import urllib.parse
-
+    """Criterion 2b: state that does not match the login's -> 4xx JSON, token exchange never attempted, no cookie."""
     pool = await _pool()
     store = AuthStore(pool)
     await store.ensure_schema()
@@ -590,28 +634,28 @@ async def test_google_oauth_callback_rejects_mismatched_state():
     try:
         app = _app_with_google_oauth(store)
         async with _async_client(app) as client:
-            # Visit /auth/google/login to get a valid state
-            login_resp = await client.get("/auth/google/login", follow_redirects=False)
+            query = await _google_login_params(client)  # a genuine state now exists in the session
+            assert query["state"][0] != "test-10-wrong-state"
 
-            # Request callback with wrong state
-            resp = await client.get("/auth/google/callback?code=test-code&state=wrong-state", follow_redirects=False)
+            stack, mock_fetch, mock_parse = _google_never_reach_network()
+            with stack:
+                resp = await client.get(
+                    "/auth/google/callback?code=test-code&state=test-10-wrong-state", follow_redirects=False
+                )
 
-            # Should be a client error (not 500)
             assert 400 <= resp.status_code < 500, f"Expected 4xx for mismatched state, got {resp.status_code}"
-
-            # Should NOT have set session cookie
-            set_cookie_headers = resp.headers.get_list("set-cookie")
-            session_cookies = [h for h in set_cookie_headers if h.startswith("session=") and "Max-Age=2592000" in h]
-            assert len(session_cookies) == 0, f"Should not have set auth session cookie, got: {set_cookie_headers}"
+            assert resp.json() == {"error": "authorization failed"}
+            mock_fetch.assert_not_called()
+            mock_parse.assert_not_called()
+            assert _auth_session_set_cookies(resp) == [], "auth cookie must not be set on state failure"
+            me = await client.get("/me")
+            assert me.json()["user"] is None
     finally:
         await _cleanup(pool)
 
 
 async def test_google_oauth_callback_rejects_unverified_email():
     """Criterion 2c: email_verified=false -> 4xx, no auth cookie, no user row created."""
-    import urllib.parse
-    from unittest.mock import AsyncMock, patch
-
     pool = await _pool()
     store = AuthStore(pool)
     await store.ensure_schema()
@@ -620,61 +664,23 @@ async def test_google_oauth_callback_rejects_unverified_email():
     try:
         app = _app_with_google_oauth(store)
         async with _async_client(app) as client:
-            # First, visit /auth/google/login to get a state cookie
-            login_resp = await client.get("/auth/google/login", follow_redirects=False)
-            location = login_resp.headers.get("location") or login_resp.headers.get("Location")
-            parsed = urllib.parse.urlparse(location)
-            query_params = urllib.parse.parse_qs(parsed.query)
-            state = query_params["state"][0]
+            claims = {"email": email, "email_verified": False, "sub": "test-10-sub-unverified"}
+            resp, mock_fetch, mock_parse, _ = await _google_sign_in(client, claims)
 
-            # Mock only fetch_access_token and parse_id_token to return unverified email
-            with patch("authlib.integrations.base_client.async_app.AsyncOAuth2Mixin.fetch_access_token") as mock_fetch, \
-                 patch("authlib.integrations.base_client.async_openid.AsyncOpenIDMixin.parse_id_token") as mock_parse:
+            assert 400 <= resp.status_code < 500, f"Expected 4xx for unverified email, got {resp.status_code}"
+            assert resp.json() == {"error": "email not verified"}
+            mock_parse.assert_awaited_once()  # got past state validation and id_token parsing; rejected on email_verified
+            assert _auth_session_set_cookies(resp) == [], "auth cookie must not be set for unverified email"
+            assert (await client.get("/me")).json()["user"] is None
 
-                # Return unverified email
-                mock_fetch.return_value = {
-                    "access_token": "test-token",
-                    "token_type": "Bearer",
-                    "userinfo": {
-                        "email": email,
-                        "email_verified": False,  # KEY: unverified
-                        "sub": "google-456",
-                    }
-                }
-
-                mock_parse.return_value = {
-                    "email": email,
-                    "email_verified": False,  # KEY: unverified
-                    "sub": "google-456",
-                }
-
-                # Invoke callback with valid state but unverified email
-                resp = await client.get(
-                    f"/auth/google/callback?code=test-code&state={state}",
-                    follow_redirects=False
-                )
-
-                # Should be 4xx
-                assert 400 <= resp.status_code < 500, f"Expected 4xx for unverified email, got {resp.status_code}"
-
-                # Should NOT have set session cookie
-                set_cookie_headers = resp.headers.get_list("set-cookie")
-                session_cookies = [h for h in set_cookie_headers if h.startswith("session=") and "Max-Age=2592000" in h]
-                assert len(session_cookies) == 0, f"Should not have set auth session cookie, got: {set_cookie_headers}"
-
-            # Verify no user was created for unverified email
-            async with pool.acquire() as conn:
-                user_rows = await conn.fetch("SELECT id FROM users WHERE email = $1", email)
-                assert len(user_rows) == 0, f"Should not create user for unverified email, but found {len(user_rows)} rows"
+        rows = await pool.fetch("SELECT id FROM users WHERE email = $1", email)
+        assert len(rows) == 0, f"no user may be created for unverified email, found {len(rows)}"
     finally:
         await _cleanup(pool, email)
 
 
 async def test_google_login_adds_auth_identity_to_existing_password_user():
-    """Criterion 3: signup with password, then Google callback -> same user with 2 providers, no duplicate user created."""
-    import urllib.parse
-    from unittest.mock import patch
-
+    """Criterion 3: POST /signup, then mocked-Google callback (same email) -> one users row, password+google identities."""
     pool = await _pool()
     store = AuthStore(pool)
     await store.ensure_schema()
@@ -682,80 +688,29 @@ async def test_google_login_adds_auth_identity_to_existing_password_user():
 
     try:
         app = _app_with_google_oauth(store)
-
-        # First, create a user with password signup
         async with _async_client(app) as client:
             resp = await client.post("/signup", json={"email": email, "password": "password123"})
             assert resp.status_code == 201
-            user1_id = resp.json()["id"]
+            user_id = resp.json()["id"]
 
-            # Verify user was created with password provider
-            async with pool.acquire() as conn:
-                user_rows = await conn.fetch("SELECT id FROM users WHERE email = $1", email)
-                assert len(user_rows) == 1, "Should have exactly 1 user for this email"
-                assert user_rows[0]["id"] == user1_id
+            claims = {"email": email, "email_verified": True, "sub": "test-10-sub-merge"}
+            callback_resp, _, mock_parse, _ = await _google_sign_in(client, claims)
+            assert callback_resp.status_code == 302, f"Expected 302, got {callback_resp.status_code}"
+            mock_parse.assert_awaited_once()
 
-                identity_rows = await conn.fetch(
-                    "SELECT provider FROM auth_identities WHERE user_id = $1 ORDER BY provider",
-                    user1_id,
-                )
-                assert len(identity_rows) == 1
-                assert identity_rows[0]["provider"] == "password"
-
-            # Now simulate Google login via the HTTP callback (criterion 3 requires HTTP, not direct store call)
-            # First, visit /auth/google/login to get a state
-            login_resp = await client.get("/auth/google/login", follow_redirects=False)
-            location = login_resp.headers.get("location") or login_resp.headers.get("Location")
-            parsed = urllib.parse.urlparse(location)
-            query_params = urllib.parse.parse_qs(parsed.query)
-            state = query_params["state"][0]
-
-            # Mock fetch_access_token and parse_id_token to return the same email
-            with patch("authlib.integrations.base_client.async_app.AsyncOAuth2Mixin.fetch_access_token") as mock_fetch, \
-                 patch("authlib.integrations.base_client.async_openid.AsyncOpenIDMixin.parse_id_token") as mock_parse:
-
-                mock_fetch.return_value = {
-                    "access_token": "test-token",
-                    "token_type": "Bearer",
-                    "userinfo": {
-                        "email": email,
-                        "email_verified": True,
-                        "sub": "google-merge-123",
-                    }
-                }
-
-                mock_parse.return_value = {
-                    "email": email,
-                    "email_verified": True,
-                    "sub": "google-merge-123",
-                }
-
-                # Invoke callback with the existing password user's email
-                callback_resp = await client.get(
-                    f"/auth/google/callback?code=test-code&state={state}",
-                    follow_redirects=False
-                )
-                assert callback_resp.status_code == 302, f"Expected 302, got {callback_resp.status_code}"
-
-            # Verify still only 1 user (no duplicate) and now has 2 providers
-            async with pool.acquire() as conn:
-                user_rows = await conn.fetch("SELECT id FROM users WHERE email = $1", email)
-                assert len(user_rows) == 1, "Should still have exactly 1 user (no duplicate created)"
-
-                identity_rows = await conn.fetch(
-                    "SELECT provider FROM auth_identities WHERE user_id = $1 ORDER BY provider",
-                    user1_id,
-                )
-                assert len(identity_rows) == 2, f"Should have 2 providers, got {len(identity_rows)}"
-                providers = [row["provider"] for row in identity_rows]
-                assert "password" in providers, "Should still have password provider"
-                assert "google" in providers, "Should now have google provider"
+        user_rows = await pool.fetch("SELECT id FROM users WHERE email = $1", email)
+        assert len(user_rows) == 1, "no duplicate user may be created"
+        assert user_rows[0]["id"] == user_id
+        providers = sorted(
+            r["provider"] for r in await pool.fetch("SELECT provider FROM auth_identities WHERE user_id = $1", user_id)
+        )
+        assert providers == ["google", "password"], f"expected google+password on same user, got {providers}"
     finally:
         await _cleanup(pool, email)
 
 
 async def test_password_signup_rejected_for_google_only_email():
-    """Criterion 4: Password signup with Google-only email rejected with clear message."""
+    """Criterion 4: Google-only user made via the mocked callback; POST /signup -> 409 naming Google, no password identity."""
     pool = await _pool()
     store = AuthStore(pool)
     await store.ensure_schema()
@@ -763,38 +718,27 @@ async def test_password_signup_rejected_for_google_only_email():
 
     try:
         app = _app_with_google_oauth(store)
-
-        # Create a Google-only user (no password)
-        await store.find_or_create_user_with_google_identity(email, email)
-
-        # Now try to sign up with password to the same email
         async with _async_client(app) as client:
+            claims = {"email": email, "email_verified": True, "sub": "test-10-sub-only"}
+            callback_resp, _, _, _ = await _google_sign_in(client, claims)
+            assert callback_resp.status_code == 302, f"Google-only user not created: {callback_resp.status_code}"
+
             resp = await client.post("/signup", json={"email": email, "password": "newpassword"})
-
-            # Should be 409 conflict
             assert resp.status_code == 409
-
-            # Error message should mention Google
             error_msg = resp.json().get("error", "").lower()
             assert "google" in error_msg, f"Error message should mention Google: {error_msg}"
+            assert error_msg != "email already registered"
 
-        # Verify password_hash is still NULL
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT ai.password_hash FROM auth_identities ai
-                WHERE ai.provider = 'password' AND ai.user_id = (
-                    SELECT id FROM users WHERE email = $1
-                )
-                """,
-                email,
-            )
-            # There should be no password auth_identity
-            assert row is None
+        row = await pool.fetchrow(
+            """
+            SELECT ai.password_hash FROM auth_identities ai
+            WHERE ai.provider = 'password' AND ai.user_id = (SELECT id FROM users WHERE email = $1)
+            """,
+            email,
+        )
+        assert row is None, "signup attempt must not have created a password identity"
     finally:
         await _cleanup(pool, email)
-
-
 
 
 async def test_google_oauth_disabled_when_client_id_unset():
