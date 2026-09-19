@@ -46,6 +46,7 @@ from app.llm import OpenAICompatibleClient
 from app.logging_utils import configure_logging, new_trace_id, trace_id_var
 from app.rag import RagError, RagService
 from app.store import PostgresStore
+from app.threads import ThreadStore, ThreadsError, _is_valid_thread_id
 from app.traces import (
     AnnotationStatus,
     GenerateStep,
@@ -380,6 +381,7 @@ def create_app(
     embed_client: OllamaClient,
     store: PostgresStore,
     trace_store: TraceStore,
+    thread_store: ThreadStore | None = None,
     settings: Settings | None = None,
     auth_store: AuthStore | None = None,
     experiments_path: str = _DEFAULT_EXPERIMENTS_PATH,
@@ -387,6 +389,13 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI()
     app.state.settings = settings
+
+    # Build get_current_user_optional early for use in chat routes (always defined)
+    if auth_store is not None and settings is not None:
+        _get_current_user_optional = make_get_current_user_optional(auth_store, settings.secret_key)
+    else:
+        async def _get_current_user_optional(request: Request) -> User | None:
+            return None
 
     # ---- health ----------------------------------------------------------
 
@@ -552,7 +561,10 @@ def create_app(
     # ---- chat -----------------------------------------------------------
 
     @app.post("/chat/start")
-    async def chat_start(request: Request):
+    async def chat_start(
+        request: Request,
+        user: User | None = Depends(_get_current_user_optional),
+    ):
         # One trace_id per chat turn, threaded through to /chat/stream via
         # the rendered <script> call below — see logging_utils.trace_id_var.
         # Set/reset is safe as a plain try/finally here (unlike chat_stream,
@@ -565,6 +577,7 @@ def create_app(
             form = await request.form()
             question = str(form.get("question", "")).strip()
             model_id = str(form.get("model_id", "")).strip()
+            raw_thread_id = str(form.get("thread_id", "")).strip()
 
             if not question:
                 return PlainTextResponse("question is required", status_code=400)
@@ -576,23 +589,63 @@ def create_app(
                 len(question), model_id, extra={"stage": "http"},
             )
 
+            # Reuse existing thread if provided, or create new one for logged-in users
+            thread_id = None
+            if user is not None and thread_store is not None:
+                # If thread_id was provided, validate ownership and soft-delete status
+                if raw_thread_id:
+                    try:
+                        proposed_thread_id = int(raw_thread_id)
+                        if not _is_valid_thread_id(proposed_thread_id):
+                            return PlainTextResponse("thread not found", status_code=404)
+                        # Validate that the thread belongs to the logged-in user and isn't soft-deleted
+                        try:
+                            thread = await thread_store.get_thread(proposed_thread_id, user.id)
+                            if thread is not None:
+                                thread_id = proposed_thread_id
+                        except ThreadsError as err:
+                            logger.warning(
+                                "thread get failed err=%s", err, extra={"stage": "http"},
+                            )
+                            return PlainTextResponse("thread not found", status_code=404)
+                    except ValueError:
+                        thread_id = None
+
+                # If no valid thread_id provided, create a new one
+                if thread_id is None:
+                    try:
+                        thread_id = await thread_store.create_thread(user.id, title=None)
+                    except ThreadsError as err:
+                        logger.warning(
+                            "thread create failed err=%s", err, extra={"stage": "http"},
+                        )
+
             escaped_question = html.escape(question)
             escaped_query = urllib.parse.quote_plus(question)
             escaped_model_id = urllib.parse.quote_plus(model_id)
             escaped_started_at = urllib.parse.quote_plus(str(started_at_ms))
             escaped_trace_id = urllib.parse.quote_plus(trace_id)
 
+            # Include thread_id parameter only if thread exists
+            thread_id_param = ""
+            if thread_id:
+                escaped_thread_id = urllib.parse.quote_plus(str(thread_id))
+                thread_id_param = f',"{escaped_thread_id}"'
+
             body = (
                 f'<div class="msg user">{escaped_question}</div>'
                 f'<div class="msg assistant raw" id="assistant-last" data-streaming="1"></div>'
-                f'<script>window.startAnswerStream("{escaped_query}","{escaped_model_id}","{escaped_started_at}","{escaped_trace_id}");</script>'
+                f'<script>window.startAnswerStream("{escaped_query}","{escaped_model_id}","{escaped_started_at}","{escaped_trace_id}"{thread_id_param});</script>'
             )
             return HTMLResponse(body)
         finally:
             trace_id_var.reset(token)
 
     @app.get("/chat/stream")
-    async def chat_stream(request: Request):
+    async def chat_stream(
+        request: Request,
+        user: User | None = Depends(_get_current_user_optional),
+    ):
         # Continues the trace_id chat_start minted (passed back as a query
         # param, same pattern as question/model_id/started_at_ms — see
         # window.startAnswerStream in app/templates/index.html). Falls back
@@ -603,6 +656,27 @@ def create_app(
         trace_id = raw_trace_id or new_trace_id()
         trace_token = trace_id_var.set(trace_id)
         reset_deferred = False
+
+        # Get thread_id if provided (logged-in user with persistent thread)
+        raw_thread_id = request.query_params.get("thread_id", "").strip()
+        thread_id = None
+        if raw_thread_id and user is not None and thread_store is not None:
+            try:
+                proposed_thread_id = int(raw_thread_id)
+                if not _is_valid_thread_id(proposed_thread_id):
+                    return PlainTextResponse("thread not found", status_code=404)
+                # Validate that the thread belongs to the logged-in user and isn't soft-deleted
+                try:
+                    thread = await thread_store.get_thread(proposed_thread_id, user.id)
+                    if thread is not None:
+                        thread_id = proposed_thread_id
+                except ThreadsError as err:
+                    logger.warning(
+                        "thread get failed err=%s", err, extra={"stage": "http"},
+                    )
+                    return PlainTextResponse("thread not found", status_code=404)
+            except ValueError:
+                thread_id = None
 
         # Unlike chat_start, this handler can return a StreamingResponse
         # whose body (event_stream() below) is driven by Starlette *after*
@@ -661,8 +735,14 @@ def create_app(
             trace_steps: list[TraceStep] = []
             should_write_trace = False
 
+            # For thread persistence: track sources and generated output
+            # to write as thread messages after streaming completes.
+            thread_sources: list[dict] | None = None
+            thread_generated_output = ""
+            should_write_thread = False
+
             async def event_stream() -> AsyncIterator[str]:
-                nonlocal should_write_trace
+                nonlocal should_write_trace, thread_sources, thread_generated_output, should_write_thread
                 try:
                     build_result = await rag_service.build_prompt(question)
                 except RagError as err:
@@ -704,6 +784,8 @@ def create_app(
                         text = text[:_MAX_SOURCE_RUNES] + "…"
                     src_rows.append({"page": r.page, "score": r.score, "text": text})
                 src_json = json.dumps(src_rows).encode("utf-8")
+                # Save sources for thread persistence
+                thread_sources = src_rows
                 yield sse("sources", base64.b64encode(src_json).decode("ascii"))
 
                 generated_tokens: list[str] = []
@@ -730,6 +812,10 @@ def create_app(
                     GenerateStep(prompt=prompt, output="".join(generated_tokens))
                 )
                 should_write_trace = True
+
+                # Save generated output for thread persistence
+                thread_generated_output = "".join(generated_tokens)
+                should_write_thread = True
 
                 stream_duration = time.monotonic() - stream_start
                 total_from_query = stream_duration
@@ -759,14 +845,36 @@ def create_app(
                         "trace write failed err=%s", err, extra={"stage": "trace"},
                     )
 
+            async def write_threads() -> None:
+                # Fire-and-forget: writes user question + assistant response to thread
+                # after SSE stream completes. Only runs if user is logged in and thread_id exists.
+                if not should_write_thread or user is None or thread_id is None or thread_store is None:
+                    return
+                try:
+                    # Write user message (with ownership check at SQL level)
+                    await thread_store.write_message(thread_id, "user", question, sources=None, user_id=user.id)
+                    # Write assistant message with sources (with ownership check at SQL level)
+                    await thread_store.write_message(
+                        thread_id,
+                        "assistant",
+                        thread_generated_output,
+                        sources=thread_sources,
+                        user_id=user.id,
+                    )
+                except ThreadsError as err:
+                    logger.warning(
+                        "thread write failed err=%s", err, extra={"stage": "thread"},
+                    )
+
             async def reset_trace_id() -> None:
                 trace_id_var.reset(trace_token)
 
             reset_deferred = True
             background_tasks = BackgroundTasks()
-            # write_trace before reset_trace_id, so its own log lines (on
+            # write_trace and write_threads before reset_trace_id, so their own log lines (on
             # failure) still carry trace_id via the contextvar filter.
             background_tasks.add_task(write_trace)
+            background_tasks.add_task(write_threads)
             background_tasks.add_task(reset_trace_id)
             return StreamingResponse(
                 event_stream(),
@@ -780,6 +888,92 @@ def create_app(
         finally:
             if not reset_deferred:
                 trace_id_var.reset(trace_token)
+
+    # ---- threads (logged-in persistence, ticket 11) -----------------------
+
+    @app.get("/threads")
+    async def list_threads_route(
+        user: User | None = Depends(_get_current_user_optional),
+    ):
+        """List all threads for the logged-in user."""
+        if user is None:
+            return JSONResponse({"error": "not authenticated"}, status_code=401)
+
+        try:
+            threads = await thread_store.list_threads(user.id)
+            return JSONResponse([
+                {
+                    "id": t.id,
+                    "user_id": t.user_id,
+                    "title": t.title,
+                    "created_at": t.created_at.isoformat(),
+                    "updated_at": t.updated_at.isoformat(),
+                    "deleted_at": t.deleted_at.isoformat() if t.deleted_at else None,
+                }
+                for t in threads
+            ])
+        except ThreadsError as err:
+            logger.warning("list_threads failed err=%s", err, extra={"stage": "http"})
+            return JSONResponse({"error": "failed to list threads"}, status_code=500)
+
+    @app.get("/threads/{thread_id}")
+    async def get_thread_route(
+        thread_id: int,
+        user: User | None = Depends(_get_current_user_optional),
+    ):
+        """Get a specific thread with its messages."""
+        if user is None:
+            return JSONResponse({"error": "not authenticated"}, status_code=401)
+
+        if not _is_valid_thread_id(thread_id):
+            return JSONResponse({"error": "thread not found"}, status_code=404)
+
+        try:
+            thread = await thread_store.get_thread(thread_id, user.id)
+            if thread is None:
+                return JSONResponse({"error": "thread not found"}, status_code=404)
+            return JSONResponse({
+                "id": thread.id,
+                "user_id": thread.user_id,
+                "title": thread.title,
+                "created_at": thread.created_at.isoformat(),
+                "updated_at": thread.updated_at.isoformat(),
+                "deleted_at": thread.deleted_at.isoformat() if thread.deleted_at else None,
+                "messages": [
+                    {
+                        "id": m.id,
+                        "role": m.role,
+                        "content": m.content,
+                        "sources": m.sources,
+                        "created_at": m.created_at.isoformat(),
+                    }
+                    for m in thread.messages
+                ]
+            })
+        except ThreadsError as err:
+            logger.warning("get_thread failed err=%s", err, extra={"stage": "http"})
+            return JSONResponse({"error": "failed to get thread"}, status_code=500)
+
+    @app.delete("/threads/{thread_id}")
+    async def delete_thread_route(
+        thread_id: int,
+        user: User | None = Depends(_get_current_user_optional),
+    ):
+        """Soft-delete a thread (sets deleted_at)."""
+        if user is None:
+            return JSONResponse({"error": "not authenticated"}, status_code=401)
+
+        if not _is_valid_thread_id(thread_id):
+            return JSONResponse({"error": "thread not found"}, status_code=404)
+
+        try:
+            deleted = await thread_store.soft_delete_thread(thread_id, user.id)
+            if not deleted:
+                return JSONResponse({"error": "thread not found"}, status_code=404)
+            return JSONResponse({"success": True})
+        except ThreadsError as err:
+            logger.warning("delete_thread failed err=%s", err, extra={"stage": "http"})
+            return JSONResponse({"error": "failed to delete thread"}, status_code=500)
 
     # ---- traces review (ticket 4) ---------------------------------------
 
@@ -967,6 +1161,15 @@ async def bootstrap() -> FastAPI:
         # Same additive-not-gating stance as traces above (ADR-0003): auth
         # schema setup failing must not take down anonymous chat.
         logger.warning("[boot] auth schema setup failed: %s", err, extra={"stage": "boot"})
+
+    thread_store = ThreadStore(pool)
+    try:
+        await thread_store.ensure_schema()
+    except ThreadsError as err:
+        # Same additive-not-gating stance as traces above (ADR-0003): thread
+        # schema setup failing must not take down chat.
+        logger.warning("[boot] threads schema setup failed: %s", err, extra={"stage": "boot"})
+
     rag_service = RagService(
         store=store,
         embed_client=embed_client,
@@ -1003,6 +1206,7 @@ async def bootstrap() -> FastAPI:
         embed_client=embed_client,
         store=store,
         trace_store=trace_store,
+        thread_store=thread_store,
         settings=settings,
         auth_store=auth_store,
     )

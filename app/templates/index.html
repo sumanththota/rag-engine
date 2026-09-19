@@ -277,7 +277,7 @@
     }
     .messages.is-receiving { border-color: #93c5fd; box-shadow: 0 0 0 1px #bfdbfe, var(--shadow); }
     #messages:empty::before {
-      content: "Ask a graduate handbook question.\A\A Responses are grounded in retrieved handbook passages.\A Conversations are saved only in this browser.";
+      content: "Ask a graduate handbook question.\A\A Responses are grounded in retrieved handbook passages.\A Conversations are saved on the server for logged-in users.";
       white-space: pre-wrap;
       display: flex;
       align-items: center;
@@ -625,6 +625,7 @@
             </div>
             <label for="q-input" class="visually-hidden">Your question</label>
             <textarea name="question" id="q-input" placeholder="Example: What are the candidacy timeline requirements for my program?" required autocomplete="off"></textarea>
+            <input type="hidden" id="thread-id-field" name="thread_id" value="">
             <div class="btns">
               <button type="submit" class="btn btn-primary" id="ask-btn">Send</button>
               <button type="button" class="btn" id="btn-stop" disabled>Stop</button>
@@ -984,29 +985,102 @@
     state.activeThreadId = id;
     try { saveState(state); } catch (e) {}
     renderThreadList();
-    renderMessagesFromState();
     setActivity("Ready");
     document.getElementById("ask-btn").disabled = false;
     setStreamingUi(false);
+
+    // Fetch messages if not already loaded (for server-backed threads)
+    const thread = threadById(state, id);
+    if (thread && !isNaN(id) && id > 0 && (!thread.messages || thread.messages.length === 0)) {
+      fetch("/threads/" + id)
+        .then(function(response) {
+          if (response.ok) {
+            return response.json();
+          }
+          throw new Error("Failed to fetch thread");
+        })
+        .then(function(threadDetail) {
+          let state = loadState();
+          const thread = threadById(state, id);
+          if (thread) {
+            thread.messages = threadDetail.messages || [];
+            try { saveState(state); } catch (e) {}
+            renderMessagesFromState();
+          }
+        })
+        .catch(function(err) {
+          console.warn("Failed to load messages for thread " + id + ":", err);
+          renderMessagesFromState();
+        });
+    } else {
+      renderMessagesFromState();
+    }
   }
 
   function deleteThread(id) {
-    let state = loadState();
-    state.threads = state.threads.filter(function (t) { return t.id !== id; });
-    if (state.activeThreadId === id) {
-      state.activeThreadId = state.threads[0] ? state.threads[0].id : null;
+    // For server-backed threads (numeric IDs), call the delete route
+    if (!isNaN(id) && id > 0) {
+      fetch("/threads/" + id, { method: "DELETE" })
+        .then(function(response) {
+          if (response.ok) {
+            // Remove from local state after server delete succeeds
+            let state = loadState();
+            state.threads = state.threads.filter(function (t) { return t.id !== id; });
+            if (state.activeThreadId === id) {
+              state.activeThreadId = state.threads[0] ? state.threads[0].id : null;
+            }
+            if (!state.threads.length) {
+              const t = { id: uuid(), title: "New chat", updatedAt: Date.now(), messages: [] };
+              state.threads = [t];
+              state.activeThreadId = t.id;
+            } else if (!state.activeThreadId) {
+              state.activeThreadId = state.threads[0].id;
+            }
+            try { saveState(state); } catch (e) {}
+            renderThreadList();
+            renderMessagesFromState();
+            setStreamingUi(false);
+          }
+        })
+        .catch(function(err) {
+          console.error("Failed to delete thread:", err);
+          // Fall back to local delete on error
+          let state = loadState();
+          state.threads = state.threads.filter(function (t) { return t.id !== id; });
+          if (state.activeThreadId === id) {
+            state.activeThreadId = state.threads[0] ? state.threads[0].id : null;
+          }
+          if (!state.threads.length) {
+            const t = { id: uuid(), title: "New chat", updatedAt: Date.now(), messages: [] };
+            state.threads = [t];
+            state.activeThreadId = t.id;
+          } else if (!state.activeThreadId) {
+            state.activeThreadId = state.threads[0].id;
+          }
+          try { saveState(state); } catch (e) {}
+          renderThreadList();
+          renderMessagesFromState();
+          setStreamingUi(false);
+        });
+    } else {
+      // For local threads (UUID), just update localStorage
+      let state = loadState();
+      state.threads = state.threads.filter(function (t) { return t.id !== id; });
+      if (state.activeThreadId === id) {
+        state.activeThreadId = state.threads[0] ? state.threads[0].id : null;
+      }
+      if (!state.threads.length) {
+        const t = { id: uuid(), title: "New chat", updatedAt: Date.now(), messages: [] };
+        state.threads = [t];
+        state.activeThreadId = t.id;
+      } else if (!state.activeThreadId) {
+        state.activeThreadId = state.threads[0].id;
+      }
+      try { saveState(state); } catch (e) {}
+      renderThreadList();
+      renderMessagesFromState();
+      setStreamingUi(false);
     }
-    if (!state.threads.length) {
-      const t = { id: uuid(), title: "New chat", updatedAt: Date.now(), messages: [] };
-      state.threads = [t];
-      state.activeThreadId = t.id;
-    } else if (!state.activeThreadId) {
-      state.activeThreadId = state.threads[0].id;
-    }
-    try { saveState(state); } catch (e) {}
-    renderThreadList();
-    renderMessagesFromState();
-    setStreamingUi(false);
   }
 
   function newChat() {
@@ -1083,7 +1157,7 @@
     });
   }
 
-  window.startAnswerStream = function (encodedQuestion, encodedModelID, encodedStartedAtMs, encodedTraceId) {
+  window.startAnswerStream = function (encodedQuestion, encodedModelID, encodedStartedAtMs, encodedTraceId, encodedThreadId) {
     const target = document.getElementById("assistant-last");
     if (!target) return;
 
@@ -1099,7 +1173,12 @@
     try { saveState(state); } catch (e) {}
     renderThreadList();
 
-    const source = new EventSource("/chat/stream?question=" + encodedQuestion + "&model_id=" + encodedModelID + "&started_at_ms=" + encodedStartedAtMs + "&trace_id=" + encodedTraceId);
+    // Build stream URL with optional thread_id parameter
+    let streamUrl = "/chat/stream?question=" + encodedQuestion + "&model_id=" + encodedModelID + "&started_at_ms=" + encodedStartedAtMs + "&trace_id=" + encodedTraceId;
+    if (encodedThreadId !== undefined && encodedThreadId) {
+      streamUrl += "&thread_id=" + encodedThreadId;
+    }
+    const source = new EventSource(streamUrl);
     activeStream = source;
     setActivity("Streaming…");
     setStreamingUi(true);
@@ -1149,6 +1228,23 @@
       document.getElementById("ask-btn").disabled = false;
       setActivity("Ready");
       setStreamingUi(false);
+
+      // Persist server thread_id to state if this was a logged-in chat
+      if (encodedThreadId !== undefined && encodedThreadId) {
+        const serverThreadId = parseInt(decodeURIComponent(encodedThreadId), 10);
+        if (!isNaN(serverThreadId) && serverThreadId > 0) {
+          let state = loadState();
+          // Update the active thread to use the server thread_id
+          if (state.activeThreadId) {
+            const idx = state.threads.findIndex(function (t) { return t.id === state.activeThreadId; });
+            if (idx !== -1) {
+              state.threads[idx].id = serverThreadId;
+              state.activeThreadId = serverThreadId;
+              try { saveState(state); } catch (e) {}
+            }
+          }
+        }
+      }
     });
 
     source.onerror = function () {
@@ -1196,6 +1292,11 @@
     if (!q) {
       evt.preventDefault();
       return;
+    }
+    // Set thread_id to the current active thread (for logged-in users with persistent threads)
+    const state = loadState();
+    if (state.activeThreadId) {
+      document.getElementById("thread-id-field").value = state.activeThreadId;
     }
     document.getElementById("ask-btn").disabled = true;
   });
@@ -1273,6 +1374,78 @@
     }
   });
 
+  async function hydratThreadsFromServer() {
+    // For logged-in users, fetch threads from server instead of using localStorage
+    try {
+      const meResp = await fetch("/me");
+      const meData = await meResp.json();
+      if (!meData.user) {
+        // Not logged in, use localStorage threads
+        return;
+      }
+      // User is logged in, fetch server threads
+      const threadsResp = await fetch("/threads");
+      if (!threadsResp.ok) {
+        console.warn("Failed to fetch threads from server");
+        return;
+      }
+      const serverThreads = await threadsResp.json();
+      if (!Array.isArray(serverThreads)) {
+        return;
+      }
+      // Convert server threads to client format, fetching full thread data including messages
+      const clientThreads = [];
+      for (let i = 0; i < serverThreads.length; i++) {
+        const t = serverThreads[i];
+        try {
+          // Fetch full thread data including messages for each thread
+          const detailResp = await fetch("/threads/" + t.id);
+          if (detailResp.ok) {
+            const threadDetail = await detailResp.json();
+            clientThreads.push({
+              id: threadDetail.id,
+              title: threadDetail.title || "Chat",
+              updatedAt: new Date(threadDetail.updated_at).getTime(),
+              messages: threadDetail.messages || []
+            });
+          } else {
+            // Fallback: add thread without messages if detail fetch fails
+            clientThreads.push({
+              id: t.id,
+              title: t.title || "Chat",
+              updatedAt: new Date(t.updated_at).getTime(),
+              messages: []
+            });
+          }
+        } catch (err) {
+          console.warn("Failed to fetch thread detail for thread " + t.id + ":", err);
+          // Fallback: add thread without messages if detail fetch fails
+          clientThreads.push({
+            id: t.id,
+            title: t.title || "Chat",
+            updatedAt: new Date(t.updated_at).getTime(),
+            messages: []
+          });
+        }
+      }
+      // Replace localStorage threads with server threads for logged-in user
+      let state = loadState();
+      state.threads = clientThreads;
+      if (clientThreads.length > 0) {
+        state.activeThreadId = clientThreads[0].id;
+      } else {
+        state.activeThreadId = null;
+      }
+      try { saveState(state); } catch (e) {}
+      // Re-render to display the hydrated threads and their messages
+      renderThreadList();
+      renderMessagesFromState();
+    } catch (err) {
+      console.warn("Failed to hydrate threads from server:", err);
+      // Fall back to localStorage if server hydration fails
+    }
+  }
+
   initMarked();
   syncModelLabel();
   let boot = loadState();
@@ -1281,6 +1454,11 @@
   renderThreadList();
   renderMessagesFromState();
   setStreamingUi(false);
+
+  // Hydrate threads from server for logged-in users
+  hydratThreadsFromServer().catch(function (err) {
+    console.warn("Hydration failed:", err);
+  });
 })();
   </script>
 </body>
