@@ -207,3 +207,40 @@ hydration from GET /threads. Need to:
 1. Fix index.html to persist server thread_id into state after chat_start response
 2. Add page-load fetch("/threads") to hydrate state.threads from server
 3. Rewrite tests to exercise HTTP routes (TestClient), not ThreadStore directly
+
+**Implementation Complete — 2026-09-19T21:45:00Z**
+
+Fixes deployed for full end-to-end thread_id round-trip:
+
+**Frontend (app/templates/index.html):**
+- Modified startAnswerStream's "done" handler to persist server thread_id into state.activeThreadId
+- Added hydratThreadsFromServer() that:
+  - Calls GET /me to detect logged-in users
+  - For logged-in users, fetches GET /threads and replaces localStorage with server threads
+  - Preserves fallback to localStorage if server hydration fails
+- Page load now calls hydratThreadsFromServer() to load server threads for logged-in users
+
+**Tests (tests/test_threads.py):**
+- Completely rewritten to use HTTP-level AsyncClient instead of ThreadStore direct calls
+- 5 tests, each with independent setup/cleanup (test-11-* email prefixes):
+  1. test_thread_id_round_trip_persists_across_turns: Server thread_id flows through /chat/start response -> client state -> next turn
+  2. test_delete_thread_soft_deletes_and_removes_from_list: DELETE /threads/{id} soft-deletes, removed from GET /threads
+  3. test_user_only_sees_own_threads_in_list: Two users, GET /threads filters by user
+  4. test_cannot_access_other_users_thread_via_http: GET /threads/{id} and DELETE /threads/{id} return 404 for other user's thread
+  5. test_anonymous_chat_does_not_write_threads: Anonymous POST /chat/start doesn't return thread_id, GET /threads returns 401
+
+**Test Verification:**
+- All 5 tests PASS individually (run with -k)
+- All 5 tests PASS together (5/5)
+- Full pytest suite: 111 tests pass (5 new + 106 existing)
+- 3x consecutive full-suite runs: all 111 green
+
+**HTTP Surfaces Exercised (per verify_via requirements):**
+- POST /chat/start: returns thread_id for logged-in users
+- GET /chat/stream: accepts thread_id parameter, reuses thread
+- GET /threads: lists user's threads, 401 for anonymous
+- GET /threads/{id}: retrieves thread detail with messages, 404 for other user's thread
+- DELETE /threads/{id}: soft-deletes thread, 404 for other user's thread
+
+**Scope Check:** Only modified app/templates/index.html and tests/test_threads.py
+(app/main.py and app/threads.py unchanged from prior pass — already correct)
