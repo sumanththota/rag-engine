@@ -44,7 +44,13 @@ or your journal. Evidence only.
 
 6. Set agent:gate-pending ONLY when every self-test is green AND every verify_via:
    HTTP/UI criterion has a test that actually exercises that surface. If a criterion
-   is still unmet, say so in the journal and stay in-progress.
+   is still unmet, say so in the journal and stay in-progress. The ONLY exception is a
+   criterion whose LOOP.md entry is marked BLOCKED-ON-<id> (a dependency not yet merged):
+   it does not hold up gate-pending, but only if LOOP.md's carve-out conditions are met
+   and the journal states "BLOCKED-ON-<id>, not met". Never mark such a criterion met.
+   If a UI criterion needs a browser check, do NOT attempt one and do NOT boot a server
+   — the orchestrator produces that evidence; your job is the code, the static-grep
+   evidence and the route-level tests.
 
 7. Do not open a PR, do not run the verifier, do not label agent:verified. That
    separation is the whole point — hand off, don't self-certify.

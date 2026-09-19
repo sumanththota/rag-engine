@@ -8,13 +8,13 @@ dag:
   blocks: []
 readiness:   # orchestrator-scored 2026-09-19 against the FLP rubric, AFTER the verify_via/criteria fixes below
   acceptance_criteria: 4   # 1-4 verbatim from issue; 5-6 orchestrator-added (see markers). Google is mocked, so 1-2 prove our wiring, not Google.
-  context: 4               # config gap + mock-only constraint documented; new-dependency/config rulings still pending a human
+  context: 5               # config gap, mock-only constraint, 3 live-verified hazards and pre-authorized edits all spelled out
 acceptance_criteria:   # 1-4 copied verbatim from the issue body; 5-6 ADDED by the orchestrator 2026-09-19 (not in the issue) so the verifier, which reads only this list, can see them. Each must be able to FAIL.
                        # Google is MOCKED everywhere (no real credentials): patch authlib's token exchange / id_token parse. A pass proves OUR handling of a Google response, never Google itself.
   - text: "GET /auth/google/login redirects to Google's consent screen with state set"
     verify_via: "HTTP — test client GET /auth/google/login with follow_redirects=False; assert a 3xx, Location host is accounts.google.com, and the query string carries a non-empty `state`"
   - text: "GET /auth/google/callback validates state, verifies email_verified, and sets the same session cookie #9 issues for password login"
-    verify_via: "HTTP — test client GET /auth/google/callback with mocked token/userinfo. Must cover: (a) valid state + email_verified:true -> cookie set, same cookie name/attrs as POST /login, and GET /me with it returns that user; (b) mismatched/missing state -> rejected, no cookie; (c) email_verified:false -> rejected, no cookie, no user row created"
+    verify_via: "HTTP — test client GET /auth/google/callback. Mock ONLY the network layers (`fetch_access_token`, `parse_id_token`) — NEVER `authorize_access_token`, which would skip the real state check. Must cover: (a) valid state + email_verified:true -> the response has EXACTLY ONE Set-Cookie named `session`, it is the #9 auth cookie (same name/attrs as POST /login; GET /me with it returns that user); (b) mismatched/missing state -> 4xx (not an uncaught 500), no auth cookie; (c) email_verified:false -> 4xx, no auth cookie, no user row created"
   - text: "A Google login with an email matching an existing password-signup user adds a new auth_identities row to that same users.id (no duplicate user created)"
     verify_via: "HTTP — POST /signup (test-10-* email), then a mocked-Google GET /auth/google/callback with that email; assert users count for that email is still 1 and auth_identities has a google row on that same users.id. A find_or_create_user-direct call cannot satisfy this"
   - text: "A password-signup attempt against a Google-only email is rejected with a clear message, not silently overwritten"
@@ -27,11 +27,11 @@ verifier_command: "pytest -q tests/test_auth.py -k google"
 escalation_triggers:
   - "schema/migration touches an existing table"
   - "the SAME criterion fails in 3 separate verify rounds"
-  - "any edit outside the owned regions listed under Context (app/auth.py, tests/test_auth.py, main.py `# region: google-oauth`, the signup handler's AuthError mapping)"
+  - "any edit outside the owned regions listed under Context (app/auth.py, tests/test_auth.py, main.py `# region: google-oauth`, the signup handler's AuthError mapping, and the pre-authorized config.py / pyproject.toml / .env.example edits)"
   - "a criterion names verify_via: HTTP or UI and the diff's tests never import a test client or call a route/element for it"   # mechanical: loop.md check (c)
 budgets: { max_iterations: 8, max_verify_rounds: 3, max_tokens: 400000, wall_clock: "2h" }
 model_routing: { implementer: "haiku", verifier: "opus", planner: "opus" }
-state: "ready-for-agent"   # GitHub label set; depends_on ["9"] is merged. Held only by the pre-flight rulings under Context.
+state: "ready-for-agent"   # GitHub label set; depends_on ["9"] is merged.
 branches: { impl: "impl/10-google-oauth", verify: "verify/10-google-oauth" }
 ---
 ## Context (progressive disclosure — links, not inlined bodies)
@@ -39,8 +39,15 @@ branches: { impl: "impl/10-google-oauth", verify: "verify/10-google-oauth" }
   - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (and a redirect URI) absent from `.env.example`, `.env` (key names checked), and `app/config.py` `Settings`.
   - `authlib` not in `pyproject.toml` (only `itsdangerous`, `httpx`, `fastapi` present). Authlib's Starlette client also needs Starlette `SessionMiddleware` for `state`; none is registered.
   - Real credentials do not exist → tests MUST mock Google (token exchange + userinfo/id_token); do not attempt a live consent flow. Mark clearly which criteria are covered by mocks only.
-  - **PRE-AUTHORIZED (orchestrator, 2026-09-19):** add placeholder keys `GOOGLE_CLIENT_ID=` and `GOOGLE_CLIENT_SECRET=` (empty values, no real credentials) to `.env.example` WITHOUT escalating. This is the ONLY out-of-region edit pre-authorized. (Note `.env.example` may already carry an uncommitted `SECRET_KEY` line from the user — append, do not overwrite or revert it.)
-  - Everything else outside owned regions STILL ESCALATES as normal, including `app/config.py` (new Settings fields), `pyproject.toml` (`authlib` dependency) and any SessionMiddleware wiring outside your own main.py region — trigger "any edit outside app/auth.py or own main.py region". List these edits up front and escalate for a ruling (#9 precedent: pyproject dep additions, see .loop/9/journal.md). Do not silently proceed.
+  - **PRE-AUTHORIZED (orchestrator, 2026-09-19):** add placeholder keys `GOOGLE_CLIENT_ID=`, `GOOGLE_CLIENT_SECRET=` and `GOOGLE_REDIRECT_URI=` (empty values, no real credentials) to `.env.example` WITHOUT escalating. Together with the three narrowly-scoped edits in the next bullet, these are the ONLY pre-authorized out-of-region edits. (Note `.env.example` may already carry an uncommitted `SECRET_KEY` line from the user — append, do not overwrite or revert it.)
+  - **PRE-AUTHORIZED (orchestrator ruling 2026-09-19, after prototyping authlib 1.8.0 + Starlette in a scratch venv) — these are the ONLY further out-of-region edits, each narrowly scoped; record each in the journal as "pre-authorized, LOOP.md ruling":**
+    1. `app/config.py` `Settings`: add exactly three OPTIONAL fields, default `""`: `google_client_id` (alias `GOOGLE_CLIENT_ID`), `google_client_secret` (`GOOGLE_CLIENT_SECRET`), `google_redirect_uri` (`GOOGLE_REDIRECT_URI`). Nothing else in config.py.
+    2. `pyproject.toml`: add `authlib>=1.3` to `dependencies`, nothing else. (`itsdangerous`, needed by SessionMiddleware, is already a dependency.)
+    3. `SessionMiddleware`: register it INSIDE the `# region: google-oauth` block via `app.add_middleware(...)` (works there — verified in the prototype). No change outside the region.
+  - **HAZARD 1 — cookie-name collision (verified live in the prototype, not theoretical):** #9's auth cookie is named `session` (`SESSION_COOKIE_NAME` in app/auth.py) and Starlette's `SessionMiddleware` ALSO defaults to `session`. With the default, the real callback emits a second header `session=null` AFTER the auth cookie and wipes the login. Register it as `SessionMiddleware(app, secret_key=settings.secret_key, session_cookie="oauth_state", ...)`. A test that mocks `authorize_access_token` hides this completely (the state is never popped, so no clobbering header appears) — that is why criterion 2 requires the real state check and asserts EXACTLY ONE `session` Set-Cookie on the callback response.
+  - **HAZARD 2 — where to mock:** state validation happens inside `authorize_access_token`, before the token exchange. Patch `oauth.google.fetch_access_token` and `oauth.google.parse_id_token` (both AsyncMock) so the state check stays real. Register the client with EXPLICIT `authorize_url` / `access_token_url` / `jwks_uri` (no `server_metadata_url`, which fetches Google's discovery doc over the network), with `code_challenge_method: "S256"`.
+  - **HAZARD 3 — uncaught OAuthError:** a wrong/missing state makes authlib raise `MismatchingStateError` (an `OAuthError`). The callback must catch it and return a 4xx, not let it surface as a 500.
+  - Everything else outside owned regions STILL ESCALATES as normal.
   - Make the new settings optional (default `""`) so the app and existing tests still boot without Google creds; `/auth/google/login` should fail with a clear error when unset rather than crash at import.
 - Cross-reference: ADR-0003 (docs/adr/0003-optional-cookie-auth-split-identities.md) — email-merge rationale for splitting auth_identities out of users.
 - **Client-parity (orchestrator ruling 2026-09-19):** issue #10 says Google sign-in is "indistinguishable except for the entry point", so OAuth success MUST reach the client the same way password login does, i.e. the #12 post-login sync hook must fire after it. #10 owns only the SERVER half: `/auth/google/callback` sets the cookie, then 302s to `/?login=google` (a documented, tested contract). #10 does NOT edit `app/templates/index.html` and does NOT implement the hook — #12 owns that (see .loop/12/LOOP.md). Add a pytest asserting the callback redirect target so the contract is verifier-checkable.
@@ -52,4 +59,5 @@ branches: { impl: "impl/10-google-oauth", verify: "verify/10-google-oauth" }
   - `app/main.py` `signup` handler: ONLY the `except AuthError` mapping, to return a distinct "this email uses Google sign-in" response for a Google-only email (criterion 4). No other change to signup/login/logout/me.
   - `.env.example`: append the two empty placeholder keys only (pre-authorized above).
   - `.loop/10/journal.md`.
-  - NOT owned, still escalates: `app/config.py`, `pyproject.toml`, `SessionMiddleware` wiring, `app/templates/index.html`, anything else. (Human ruling on config/authlib/SessionMiddleware still outstanding — list them up front.)
+  - `app/config.py` (3 optional Google fields ONLY) and `pyproject.toml` (`authlib>=1.3` ONLY) — pre-authorized, see rulings above.
+  - NOT owned, still escalates: `app/templates/index.html`, any other config.py/pyproject.toml change, anything else.

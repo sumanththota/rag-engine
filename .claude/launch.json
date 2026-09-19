@@ -4,8 +4,23 @@
     {
       "name": "rag-engine",
       "runtimeExecutable": ".venv/bin/python",
-      "runtimeArgs": ["-m", "app.main"],
+      "runtimeArgs": [
+        "-m",
+        "app.main"
+      ],
       "port": 8080
+    },
+    {
+      "name": "flp-test-instance",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": [
+        "-m",
+        "app.main"
+      ],
+      "port": 8099,
+      "env": {
+        "PORT": "8099"
+      }
     }
   ]
 }
