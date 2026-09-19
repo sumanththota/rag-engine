@@ -153,3 +153,45 @@ Merging impl/11-persist-threads to get round 1 work. Implementing fixes in prior
 - Ownership enforced at HTTP layer via auth check + store layer via user_id filter
 - Anonymous users cannot access any thread routes (401)
 - Logged-in users only see/modify their own threads (404 on foreign thread_id)
+
+## Orchestrator manual pre-gate check — 2026-09-19T00:00:00Z
+
+NOT advancing to gate-pending. Manually applied the new gate-pending check (c) plus a
+deeper integration read before spawning the verifier again, per human request.
+
+**Check (c) — verify_via: HTTP for all six criteria, grep for a test client / route call:**
+`grep -n "TestClient\|AsyncClient\|client\.\(get\|post\|delete\)" tests/test_threads.py`
+returns zero matches. All six tests call `ThreadStore` methods directly
+(`create_thread`, `write_message`, `get_thread`, `list_threads`,
+`soft_delete_thread`). The repo already has a TestClient/AsyncClient pattern in
+`tests/test_auth.py`, `tests/test_main.py`, `tests/test_embed.py` that was not reused
+here. This is a hard block per check (c) on all six criteria, not just some.
+
+**Deeper finding — the new HTTP surface is not actually wired into the app's own UI:**
+- `app/main.py` does add real routes (`GET /threads`, `GET /threads/{id}`,
+  `DELETE /threads/{thread_id}`) and `chat_start` does now accept/reuse a `thread_id`
+  form field instead of always minting a new one — the backend logic for criterion 1's
+  defect is correct in isolation.
+- But `app/templates/index.html`'s client-side thread list (`state.threads`,
+  `state.activeThreadId`) is still entirely the pre-existing local/UUID system. The
+  server's integer `thread_id` returned via `startAnswerStream`'s 5th argument
+  (`encodedThreadId`) is used only to build the current SSE request URL — it is never
+  written into `state.activeThreadId` or `state.threads`. On the next turn, the hidden
+  `thread-id-field` is populated from `state.activeThreadId` (null or a local UUID),
+  not the server's thread id, so `chat_start`'s `int(raw_thread_id)` fails and a NEW
+  thread is minted again. The turn-fragmentation defect this round targeted is not
+  actually fixed end-to-end through the real UI, only in a direct-call test.
+- There is no `fetch("/threads")` (GET, list) anywhere in index.html, so nothing loads
+  server-stored threads into the sidebar on page load/refresh — criterion 1's "refresh
+  shows the same conversation" has no code path that could satisfy it yet.
+- `deleteThread(id)`'s new server-delete branch (`if (!isNaN(id) && id > 0)`) is
+  correct in isolation but unreachable in practice, since `state.threads` never
+  contains a server-issued numeric id for it to be called with.
+
+**What did check out:** the test-isolation fix is real — each of the 4 previously-order-
+dependent tests passes alone and filtered with `-k`, and the full suite (112 tests)
+passed 3x consecutively. Scope stayed within owned regions.
+
+Verdict: two rounds in, the acceptance criteria are still not met end-to-end and are
+still tested at the wrong level. Sending back to the implementer rather than spawning
+the verifier — a verifier round would just re-find the same gaps at higher cost.
