@@ -128,6 +128,11 @@ tokens via SSE).
   prefix. Do not rely on another test's teardown or ordering.
   CHECK: run the new test file alone, and filtered with -k, before claiming
   done.
+- No test's only meaningful assertion may sit behind a runtime conditional
+  (`if extracted_value: assert ...`). If the value can be absent, that absence
+  IS the failure case and must assert failure, not skip silently.
+  CHECK: grep new tests for `if .*:\s*$` followed by an assert on the next line;
+  flag for human read, since this needs judgment a grep alone can't finish.
 
 ## See also
 
