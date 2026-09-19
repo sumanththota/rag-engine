@@ -985,10 +985,36 @@
     state.activeThreadId = id;
     try { saveState(state); } catch (e) {}
     renderThreadList();
-    renderMessagesFromState();
     setActivity("Ready");
     document.getElementById("ask-btn").disabled = false;
     setStreamingUi(false);
+
+    // Fetch messages if not already loaded (for server-backed threads)
+    const thread = threadById(state, id);
+    if (thread && !isNaN(id) && id > 0 && (!thread.messages || thread.messages.length === 0)) {
+      fetch("/threads/" + id)
+        .then(function(response) {
+          if (response.ok) {
+            return response.json();
+          }
+          throw new Error("Failed to fetch thread");
+        })
+        .then(function(threadDetail) {
+          let state = loadState();
+          const thread = threadById(state, id);
+          if (thread) {
+            thread.messages = threadDetail.messages || [];
+            try { saveState(state); } catch (e) {}
+            renderMessagesFromState();
+          }
+        })
+        .catch(function(err) {
+          console.warn("Failed to load messages for thread " + id + ":", err);
+          renderMessagesFromState();
+        });
+    } else {
+      renderMessagesFromState();
+    }
   }
 
   function deleteThread(id) {
@@ -1367,15 +1393,41 @@
       if (!Array.isArray(serverThreads)) {
         return;
       }
-      // Convert server threads to client format
-      const clientThreads = serverThreads.map(function (t) {
-        return {
-          id: t.id,  // numeric server id
-          title: t.title || "Chat",
-          updatedAt: new Date(t.updated_at).getTime(),
-          messages: []  // Messages are not included in list endpoint
-        };
-      });
+      // Convert server threads to client format, fetching full thread data including messages
+      const clientThreads = [];
+      for (let i = 0; i < serverThreads.length; i++) {
+        const t = serverThreads[i];
+        try {
+          // Fetch full thread data including messages for each thread
+          const detailResp = await fetch("/threads/" + t.id);
+          if (detailResp.ok) {
+            const threadDetail = await detailResp.json();
+            clientThreads.push({
+              id: threadDetail.id,
+              title: threadDetail.title || "Chat",
+              updatedAt: new Date(threadDetail.updated_at).getTime(),
+              messages: threadDetail.messages || []
+            });
+          } else {
+            // Fallback: add thread without messages if detail fetch fails
+            clientThreads.push({
+              id: t.id,
+              title: t.title || "Chat",
+              updatedAt: new Date(t.updated_at).getTime(),
+              messages: []
+            });
+          }
+        } catch (err) {
+          console.warn("Failed to fetch thread detail for thread " + t.id + ":", err);
+          // Fallback: add thread without messages if detail fetch fails
+          clientThreads.push({
+            id: t.id,
+            title: t.title || "Chat",
+            updatedAt: new Date(t.updated_at).getTime(),
+            messages: []
+          });
+        }
+      }
       // Replace localStorage threads with server threads for logged-in user
       let state = loadState();
       state.threads = clientThreads;
@@ -1385,6 +1437,9 @@
         state.activeThreadId = null;
       }
       try { saveState(state); } catch (e) {}
+      // Re-render to display the hydrated threads and their messages
+      renderThreadList();
+      renderMessagesFromState();
     } catch (err) {
       console.warn("Failed to hydrate threads from server:", err);
       // Fall back to localStorage if server hydration fails

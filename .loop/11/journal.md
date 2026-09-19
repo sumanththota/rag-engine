@@ -272,3 +272,125 @@ static check on the JS source (e.g. grep for a fetch to /threads/{id} inside wha
 function populates message content) — flagged for human decision, not something to
 silently paper over by declaring this test sufficient for criterion 1's "refresh shows
 the same conversation" when the frontend path it depends on remains unverified.
+
+## Session 4 — 2026-09-19T19:30:00Z
+
+**Round 4: Frontend JS Fix — Complete**
+
+Start time: 2026-09-19T19:30:00Z
+
+Fixed the three identified frontend JS gaps in app/templates/index.html:
+
+1. **hydratThreadsFromServer()** — was fetching GET /threads (list, no message content) and hardcoding `messages: []` for each thread.
+   - Changed to fetch GET /threads/{id} for each thread to load real message content
+   - Converts server thread to client format with all messages (role, content, sources)
+   - Falls back gracefully if individual thread fetch fails
+   - After hydration completes, calls renderThreadList() and renderMessagesFromState() to display the hydrated data
+   
+2. **switchThread(id)** — was only loading state without fetching message content on demand.
+   - Added fetch of GET /threads/{id} when switching to a thread whose messages aren't already loaded
+   - Checks if thread is server-backed (numeric id > 0) and has no messages
+   - Updates state with fetched messages and re-renders after fetch completes
+   - Falls back to renderMessagesFromState() with empty messages if fetch fails
+   
+3. **deleteThread()** was already wired correctly in round 3 — calls DELETE /threads/{id} for numeric threads.
+
+**grep -n "threads/" verification:**
+```
+995:      fetch("/threads/" + id)
+1023:      fetch("/threads/" + id, { method: "DELETE" })
+1402:          const detailResp = await fetch("/threads/" + t.id);
+```
+
+All three required GET/DELETE calls now present in index.html.
+
+**API Contract Coverage:**
+Existing test `test_conversation_persists_across_turns_and_devices` (lines 114-260 in tests/test_threads.py) already covers the API contract requirement. It:
+- Drives two real turns through POST /chat/start + GET /chat/stream
+- Calls GET /threads/{thread_id} after both turns complete
+- Asserts that the response includes all 4 messages (2 turns x 2 sides)
+- Verifies messages have correct role, content, and sources fields
+
+This test PASSES on current code (impl/11-persist-threads), proving the backend API contract is correct and the frontend fix now has the data available to consume.
+
+**Manual HTTP Verification:**
+Executed manual verification script exercising full chat flow:
+1. Sign up: 201 OK
+2. Login: 200 OK
+3. Chat start turn 1: 200 OK (returned thread_id=349)
+4. Stream turn 1: 200 OK
+5. Chat start turn 2: 200 OK (reused thread_id=349)
+6. Stream turn 2: 200 OK
+7. GET /threads/349 (detail endpoint): 200 OK with full response:
+   - 4 messages returned (user, assistant, user, assistant)
+   - Each message has: id, role, content, sources (array with page/text/score for assistant), created_at
+   - Sources present on both assistant messages
+8. GET /threads (list endpoint) for comparison: 200 OK with thread metadata only (no messages field)
+
+Raw HTTP Response (GET /threads/349):
+```json
+{
+  "id": 349,
+  "user_id": 951,
+  "title": null,
+  "created_at": "2026-09-19T19:21:00.787654+00:00",
+  "updated_at": "2026-09-19T19:21:00.824136+00:00",
+  "deleted_at": null,
+  "messages": [
+    {
+      "id": 161,
+      "role": "user",
+      "content": "What is the PTO policy?",
+      "sources": null,
+      "created_at": "2026-09-19T19:21:00.814591+00:00"
+    },
+    {
+      "id": 162,
+      "role": "assistant",
+      "content": "Hello there",
+      "sources": [
+        {
+          "page": 1,
+          "text": "handbook excerpt",
+          "score": 0.9
+        }
+      ],
+      "created_at": "2026-09-19T19:21:00.816906+00:00"
+    },
+    {
+      "id": 163,
+      "role": "user",
+      "content": "And sick leave?",
+      "sources": null,
+      "created_at": "2026-09-19T19:21:00.822429+00:00"
+    },
+    {
+      "id": 164,
+      "role": "assistant",
+      "content": "Hello there",
+      "sources": [
+        {
+          "page": 1,
+          "text": "handbook excerpt",
+          "score": 0.9
+        }
+      ],
+      "created_at": "2026-09-19T19:21:00.823719+00:00"
+    }
+  ]
+}
+```
+
+This proves the API returns all data the frontend JS needs to render a full conversation on page load or thread switch.
+
+**Test Status:**
+- All 6 thread-specific tests PASS
+- Full suite: 112 tests PASS (6 thread + 106 existing)
+- Ran 3x consecutively, all green
+
+**Scope Check:**
+- Only edited: app/templates/index.html and .loop/11/journal.md
+- No changes to app/threads.py, app/main.py (unchanged from round 3), or tests/test_threads.py
+
+**Frontend Gap Identified (static, not part of implementation):**
+This repo has NO JS test harness (no playwright/jest/selenium — confirmed via `find . -name "*.config.js" -o -name "jest.config" -o -name ".testcaferc"` returning zero matches). The frontend JS changes cannot be tested programmatically; the API contract test proves the backend data is available, but JS behavior (hydration on page load, rendering after fetch, on-demand load in switchThread) can only be verified through manual inspection or browser interaction. All three JS functions now correctly call the server routes, but actual rendering behavior is outside pytest's scope.
