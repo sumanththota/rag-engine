@@ -57,3 +57,12 @@ Draft PR opened; implementer not yet spawned. Implementer: stamp start time in f
 **Status:** All criteria met with HTTP-level route tests. Signup error mapping in place. Full suite green.
 
 **Tokens:** ~75k used (estimate).
+
+## Orchestrator — 2026-09-19T22:12:15Z — verify round 1: NEEDS_WORK (raw verdict on PR #17, comment 5745656616)
+
+Verifier returned NEEDS_WORK at 1961990. Summary only; the raw verdict is on the PR and will be the implementer's next prompt. Criteria 2, 3, 5 FAIL and 1 NEEDS_WORK on test quality (mutation-tested: 4 of 5 behavior breaks left all 10 Google tests green); criteria 4, 6 pass. Plus one real defect: the route calls `parse_id_token(token)` without the required `nonce`.
+
+**Orchestrator error acknowledged:** the `parse_id_token` defect is partly mine. LOOP.md HAZARD 2 told the implementer to patch `parse_id_token`; my scratch prototype patched it too, which hid that its real signature needs `nonce`. LOOP.md amended with HAZARD 4 (same commit). This is a spec-guidance error, not implementer overreach. RETRO-CANDIDATE: a prototype that mocks the same seam the implementer will mock proves nothing about that seam — verify the real signature (`inspect.signature`) before writing mock guidance.
+
+Verify rounds used: 1 of 3.
+
