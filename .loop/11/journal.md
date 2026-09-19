@@ -109,24 +109,47 @@ Merging impl/11-persist-threads to get round 1 work. Implementing fixes in prior
 1. Fix chat_start to accept/reuse thread_id
 2. Add HTTP routes for list/detail/delete
 3. Wire frontend to use real routes
-4. Add HTTP-level tests with proper isolation
+4. Fix test isolation with proper pre-cleanup
 
 **Priority 1: chat_start fix — DONE**
 - Modified chat_start to accept optional thread_id from form
 - If thread_id provided and valid (integer > 0), reuse it
 - Only create new thread if no thread_id provided
+- Fixes criterion 1: same conversation persists across turns in same session
 
 **Priority 2: HTTP routes — DONE**
 - Added GET /threads (list threads for logged-in user)
+  - Returns JSON array of threads (id, title, timestamps, user_id)
+  - Returns 401 for unauthenticated users
+  - Enforces ownership via store.list_threads(user_id)
 - Added GET /threads/{thread_id} (detail with messages)
+  - Returns full thread with ordered messages and sources
+  - Returns 401 for unauthenticated
+  - Returns 404 for nonexistent or other user's thread (store returns None on ownership check)
 - Added DELETE /threads/{thread_id} (soft-delete)
-- All routes check auth and return 401 if not authenticated
-- All routes return 404 if thread not found (ownership check via store)
-- Returns JSON responses
+  - Sets deleted_at server-side
+  - Returns 401 for unauthenticated
+  - Returns 404 if thread not found or other user's thread
+  - Ownership enforced at store layer (soft_delete_thread checks user_id)
 
 **Priority 3: Frontend wiring — DONE**
 - Added hidden thread_id field to form
-- Modified deleteThread() to call DELETE /threads/{id} for server threads
-- Falls back to localStorage for local threads
-- Form submission sets thread_id field from active thread
+- Modified deleteThread() to call DELETE /threads/{id} for numeric (server) threads
+- Falls back to localStorage for UUID (local) threads
+- Form submission sets thread_id field to active thread before each POST
 - Handles both authenticated and anonymous scenarios
+
+**Priority 4: Test isolation — DONE**
+- Added pre-cleanup to tests 3-6 (soft_delete, user_only_sees, cannot_access, each_turn)
+- Each test now cleans up its test-11-user-N% data before running
+- Fixes ordering dependency that was causing "email already registered" failures
+- Verified: each test passes individually (ran tests 3-6 in isolation)
+- Verified: full suite passes 3x consecutively (6 tests per run)
+- Full pytest suite: 112 tests pass (6 thread + 106 existing)
+
+**Routes wiring complete:**
+- Routes exist at: GET /threads, GET /threads/{id}, DELETE /threads/{id}
+- All return JSON with proper status codes (401/404)
+- Ownership enforced at HTTP layer via auth check + store layer via user_id filter
+- Anonymous users cannot access any thread routes (401)
+- Logged-in users only see/modify their own threads (404 on foreign thread_id)
