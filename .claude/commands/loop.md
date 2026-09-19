@@ -66,7 +66,17 @@ Run once, then exit (a fresh context restarts you next tick).
      Then (human, or auto if within blast-radius policy) merge; on merge, re-evaluate DAG:
      any issue whose depends_on are all merged -> label ready-for-agent.
      Write retro.md; update INDEX.md; promote checked learnings into CONVENTIONS.md.
-6. STOP CONDITIONS (hard): count this feature's journal entries as iterations; if
+6. VERIFY EVERY PUSH (standing, permanent — applies after ANY agent, implementer or
+   verifier, claims work is committed/pushed): never trust the claim. Check origin
+   directly:
+     git ls-remote origin <branch> | cut -f1
+     git rev-parse <branch>
+   These must match. If they don't, push it yourself before proceeding. This has now
+   failed 3 distinct ways on #11 alone — wrong branch entirely, right branch never
+   pushed, verify branch not fast-forwarded — each one invisible from the agent's own
+   report. Treat "pushed" as unverified until confirmed against origin, every single
+   time, for every agent.
+7. STOP CONDITIONS (hard): count this feature's journal entries as iterations; if
    max_iterations is exceeded, or any escalation_trigger fired, label agent:blocked, write
    the reason to journal.md, and STOP for a human. Nothing measures max_tokens or
    wall_clock — read them off the journal yourself at each tick.
