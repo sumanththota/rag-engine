@@ -7,12 +7,18 @@ dag:
   depends_on: ["9"]     # needs a resolvable logged-in user via get_current_user_optional
   blocks: ["12"]        # migrate pre-login local Threads on first login
 acceptance_criteria:    # copied verbatim from the issue body; each must be able to FAIL
-  - "Logging in, chatting, then refreshing (or opening on another device) shows the same conversation"
-  - "Each chat turn writes one thread_messages row per side (user + assistant), including sources"
-  - "Clicking the existing delete icon on a Thread sets deleted_at server-side (soft-delete); the Thread no longer appears in the list"
-  - "A user only ever sees their own Threads in the list and detail views"
-  - "Fetching another user's Thread id directly (e.g. by guessing/incrementing) returns 404/403, not their data"
-  - "Anonymous chat is unaffected — no server write, no regression"
+  - text: "Logging in, chatting, then refreshing (or opening on another device) shows the same conversation"
+    verify_via: "HTTP — real request to /chat/start with a known thread_id, then a read-back route; a ThreadStore-direct test cannot satisfy this"
+  - text: "Each chat turn writes one thread_messages row per side (user + assistant), including sources"
+    verify_via: "HTTP — drive /chat/start + /chat/stream through a test client, then confirm the thread_messages rows; calling ThreadStore directly does not exercise chat_stream's write path"
+  - text: "Clicking the existing delete icon on a Thread sets deleted_at server-side (soft-delete); the Thread no longer appears in the list"
+    verify_via: "HTTP — DELETE route, then GET the list route and confirm absence"
+  - text: "A user only ever sees their own Threads in the list and detail views"
+    verify_via: "HTTP — list and detail routes as two different logged-in users"
+  - text: "Fetching another user's Thread id directly (e.g. by guessing/incrementing) returns 404/403, not their data"
+    verify_via: "HTTP — a Python None return from a store method is not a status code"
+  - text: "Anonymous chat is unaffected — no server write, no regression"
+    verify_via: "HTTP — anonymous chat through the routes, then confirm no thread rows were written"
 verifier_command: "pytest -q tests/test_threads.py"
 escalation_triggers:
   - "schema/migration touches an existing table"   # threads/thread_messages are new tables; watch for edits to existing ones
