@@ -35,3 +35,15 @@ branches: { impl: "impl/11-persist-threads", verify: "verify/11-persist-threads"
 - Cross-reference: Thread glossary entry in CONTEXT.md — distinguishes Thread from the existing, unrelated Trace table; the two stay unlinked by design (ADR-0003).
 - Convention refs: CONVENTIONS.md §1 module map (add app/threads.py row), §7 (agent-loop testing, once added)
 - Hotspot files & owned regions: new module app/threads.py (own ensure_schema(), one typed error, matching PostgresStore/TraceStore convention); app/templates/index.html (update the now-false "saved only in this browser" copy); thread_id wiring through GET /chat/start -> GET /chat/stream, same pattern as the existing trace_id param; write into thread_messages inside chat_stream's event_stream() at the same point Trace capture already writes to traces — two independent writes, not a shared write path.
+- The client and server threading state have not been connected across any prior pass.
+  Own the full round-trip explicitly, in this order, and treat it as ONE unit of work,
+  not four separate criteria:
+    1. /chat/start returns thread_id in its response.
+    2. index.html stores that thread_id and sends it back on the next turn to the SAME
+       endpoint — this is the field that has been missing both previous passes.
+    3. On page load, call GET /threads and hydrate the client thread list from the
+       server response, replacing localStorage as the source of truth for logged-in users.
+    4. The delete icon calls DELETE against the server-issued numeric id, not a local id.
+  Do not consider any of criteria 1-5 addressable independently. If thread_id doesn't
+  round-trip, criteria 1, 3, 4, and 5 are all still failing regardless of what else
+  is built.
