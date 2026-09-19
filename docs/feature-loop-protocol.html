@@ -444,6 +444,7 @@ footer{padding:40px 0 70px;border-top:1px solid var(--rule);color:var(--ink-3);f
     <button class="tab" role="tab" aria-selected="false" data-t="retro">retro.md</button>
     <button class="tab" role="tab" aria-selected="false" data-t="index">INDEX.md</button>
     <button class="tab" role="tab" aria-selected="false" data-t="orch">/loop prompt</button>
+    <button class="tab" role="tab" aria-selected="false" data-t="impl">implementer prompt</button>
     <button class="tab" role="tab" aria-selected="false" data-t="verif">verifier prompt</button>
   </div>
 
@@ -458,18 +459,27 @@ dag:
   depends_on: ["9"]        # password auth
   blocks: ["12"]           # sync threads on login
 acceptance_criteria:       # written BEFORE implementation; each must be able to FAIL
-  - "POST /threads, restart a test app instance on an ephemeral port, GET /threads
-     returns the thread"   # never :8080 — that server is shared, see CONVENTIONS §7
-  - "User A cannot GET User B's thread (403)"
-  - "pytest -q tests/test_threads.py green with test-11-* fixtures"
-  - "the FULL suite is green"   # standing criterion on every feature: verifier_command
-                                # is narrower than the blast radius of any real change
+                           # verify_via names the surface a test MUST exercise — a store-
+                           # or service-level call does not satisfy a route/UI criterion,
+                           # however green it runs (found live on #11: 6 tests, all
+                           # ThreadStore-direct, 0 touched an HTTP route)
+  - text: "Login, chat, refresh / another device shows same conversation"
+    verify_via: "HTTP — real request to /chat/start with a known thread_id, then a
+                 read-back route; a ThreadStore-direct test cannot satisfy this"
+  - text: "Delete icon sets deleted_at server-side; thread leaves the list"
+    verify_via: "HTTP — DELETE route, then GET the list route and confirm absence"
+  - text: "User A cannot GET User B's thread (403/404 at the route)"
+    verify_via: "HTTP — a Python None return from a store method is not a status code"
+  - text: "the FULL suite is green"   # standing criterion on every feature: verifier_command
+    verify_via: "pytest -q, no -k filter"   # is narrower than the blast radius of any change
 verifier_command: "pytest -q tests/test_threads.py -k thread"
 escalation_triggers:
   - "schema/migration touches an existing table"
   - "the SAME criterion fails in 3 separate verify rounds"   # not the same counter as
                                                              # max_verify_rounds below
   - "any edit outside app/threads/ or the agent's own main.py region"
+  - "a criterion names verify_via: HTTP or UI and the diff's tests never import a test
+     client or call a route/element for it"   # mechanical: grep, not judgment
 # max_iterations is the only budget anything checks (the orchestrator counts journal
 # entries). max_tokens and wall_clock are review prompts — nothing measures them.
 budgets: { max_iterations: 8, max_verify_rounds: 3, max_tokens: 400000, wall_clock: "2h" }
@@ -512,7 +522,11 @@ branches: { impl: "impl/11-persist-threads", verify: "verify/11-persist-threads"
 - Owner isolation wasn't in the spec; discovered during verify.
 
 ## Learnings -&gt; promote
+# A promoted learning needs a CHECK the orchestrator or verifier can run — prose alone
+# gets forgotten. Proven live: #9's retro said "per-test cleanup, scoped prefixes" with
+# no CHECK line, and the identical ordering-fragility bug recurred on #11's tests.
 - [x] -&gt; CONVENTIONS.md §7: "every reads-by-owner endpoint needs a cross-owner 403 test"
+      CHECK: grep new route tests for a second user fixture + a 403/404 assertion.
 - [ ] -&gt; skill: scaffold owner-isolation test (candidate, not yet reusable)
 
 ## Superseded
@@ -554,7 +568,7 @@ Run once, then exit (a fresh context restarts you next tick).
      verify via pytest, spinning up a test instance on an ephemeral port where a
      criterion needs one; stamp a start time in the first journal entry and append one
      entry per iteration; set label agent:gate-pending ONLY with every self-test green.
-   - agent:gate-pending -&gt; TWO CHECKS FIRST; fail either and label agent:blocked:
+   - agent:gate-pending -&gt; THREE CHECKS FIRST; fail any and label agent:blocked:
      (a) `git diff --name-only master...impl/&lt;id&gt;-*` — every path must fall inside the
          owned regions named in LOOP.md. An out-of-region edit is an escalation trigger,
          not something the implementer may justify in the journal and carry on from.
@@ -563,6 +577,13 @@ Run once, then exit (a fresh context restarts you next tick).
      (b) fast-forward verify/&lt;id&gt;-* to impl/&lt;id&gt;-* and confirm the diff is EMPTY. A
          verify branch that lags gates stale code and burns a whole round on a finding
          that was already fixed.
+     (c) for every criterion in LOOP.md whose verify_via names HTTP or a UI element,
+         grep the new/changed test files for a test client, a route call, or that
+         element. Zero matches on any such criterion is a block, named specifically —
+         "criterion 3 (verify_via: HTTP) has no route-level test in the diff." This is
+         a mechanical check on imports and calls, not a read of test quality. Found live
+         on #11: six green tests, all calling ThreadStore directly, zero touching a
+         route — four of six criteria were untested at the level they were written.
      Then spawn VERIFIER (strong model, on verify/&lt;id&gt;-*, Write and Edit disallowed). Run verifier_command. The VERIFIER posts its own raw
      verdict to the PR with gh — you must not relay it, since you only receive its summary
      and relaying would paraphrase the thing that gates the merge.
@@ -578,6 +599,47 @@ Run once, then exit (a fresh context restarts you next tick).
    wall_clock — read them off the journal yourself at each tick.
 
 Never advance more than one step. Never let the implementer's "tests pass" be the accept signal.</pre>
+  </div>
+
+  <div class="codeblock" data-p="impl" hidden>
+    <div class="codehead"><span class="fn">.claude/agents/implementer.md — model: haiku, isolation: worktree</span><button class="btn copy">Copy</button></div>
+<pre>You are the IMPLEMENTER for one Feature Loop Protocol ticket. You do NOT decide whether
+your own work is accepted — a separate verifier does, and it will not read your reasoning
+or your journal. Evidence only.
+
+1. Read .loop/&lt;id&gt;/LOOP.md. Touch only the owned regions it names. An edit outside them
+   is an escalation trigger — stop and flag it, do not justify it in the journal and
+   continue. Found live on #9: a two-line pyproject.toml edit was rationalized past
+   instead of escalated. The rule is not a judgment call.
+
+2. For EACH acceptance criterion, check its verify_via field before writing any test.
+   If verify_via names HTTP or a UI element, your test MUST exercise that surface —
+   a real request through a test client, or a real interaction with that element.
+   A test that calls the store or service layer underneath it does NOT satisfy a
+   criterion written in terms of a route or a UI action, no matter how green it runs.
+   Found live on #11: six passing tests, all calling ThreadStore directly, while four
+   of six criteria were written in terms of routes that did not exist. The suite was
+   100% green and untested at the level the criteria were actually written.
+
+3. Give every new test its own setup and its own cleanup, scoped to its own fixture
+   prefix (test-&lt;id&gt;-*). Do not rely on another test's finally block, teardown, or
+   ordering. Found live on #9 AND recurred on #11 despite being written into
+   CONVENTIONS.md after #9: run each new test file alone, filtered, and reordered
+   before claiming done — not just as part of the full suite.
+
+4. Do NOT boot the shared dev server on :8080. Spin up a test instance on an ephemeral
+   port where a criterion needs one to be running.
+
+5. Stamp a start time in your first journal entry for this ticket. Append one entry
+   per iteration — not one consolidated entry at the end. The journal is the next
+   agent's onboarding read; a single retrospective entry is not a readable tail.
+
+6. Set agent:gate-pending ONLY when every self-test is green AND every verify_via:
+   HTTP/UI criterion has a test that actually exercises that surface. If a criterion
+   is still unmet, say so in the journal and stay in-progress.
+
+7. Do not open a PR, do not run the verifier, do not label agent:verified. That
+   separation is the whole point — hand off, don't self-certify.</pre>
   </div>
 
   <div class="codeblock" data-p="verif" hidden>
@@ -968,6 +1030,18 @@ Then STOP and show me: the tree you created, and the rubric scores.</pre>
       <div class="pick">The verify branch silently lags</div>
       <p>Nothing advances <code>verify/&lt;id&gt;-*</code> when the implementer commits a fix. A verifier pointed at it gates code from two commits ago, correctly re-reports a defect that was already fixed, and burns a whole round. The design states that the two branches match; it never says who makes that true.</p>
       <div class="flip">Fast-forward and <b>confirm an empty diff</b> before spawning the verifier — same check that catches a verifier which edited something, run at the other end.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--blocked)">
+      <h4>Found on the second live feature</h4>
+      <div class="pick">Green tests can guard nothing the criteria actually asked for</div>
+      <p>#11 shipped six passing tests, all calling <code>ThreadStore</code> directly. Four of six acceptance criteria were written in terms of HTTP routes and UI elements that didn't exist yet. The suite was 100% green and 0% relevant to most of what it was supposed to prove — caught only because the verifier built the real app and drove actual HTTP turns instead of trusting the shipped tests.</p>
+      <div class="flip"><code>verify_via</code> on every criterion, and a <b>mechanical grep</b> before gating: a criterion naming HTTP or UI with no test client or route call in the diff is a block, named specifically — not a judgment call on test quality.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--blocked)">
+      <h4>Found on the second live feature</h4>
+      <div class="pick">A retro learning written in prose still recurred</div>
+      <p>#9's retro flagged test-ordering fragility from shared, unscoped cleanup. It was checked off and promoted into <code>CONVENTIONS.md</code> — as a sentence. The identical bug shipped again in #11's suite: tests 3–6 depend on test 2's <code>finally</code> block for cleanup, and fail if run alone, filtered, or reordered. Writing a learning down made it archival, not enforced.</p>
+      <div class="flip">Every promoted learning gets a <b>CHECK line</b> the orchestrator can run — a grep, not a sentence. If a learning can't be phrased as something checkable, it belongs at the template or gate level instead, not as prose to remember.</div>
     </div>
     <div class="dcard" style="border-left-color:var(--ink-3)">
       <h4>Scope discipline</h4>

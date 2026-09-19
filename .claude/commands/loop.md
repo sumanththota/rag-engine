@@ -29,7 +29,7 @@ Run once, then exit (a fresh context restarts you next tick).
      port where a criterion needs one; stamp a start time in the first journal entry and
      append one entry per iteration; set label agent:gate-pending ONLY with every
      self-test green.
-   - agent:gate-pending -> TWO CHECKS FIRST; fail either and label agent:blocked:
+   - agent:gate-pending -> THREE CHECKS FIRST; fail any and label agent:blocked:
      (a) `git diff --name-only master...impl/<id>-*` — every path must fall inside the
          owned regions named in LOOP.md. An out-of-region edit is an escalation trigger,
          not something the implementer may justify in the journal and carry on from.
@@ -38,6 +38,13 @@ Run once, then exit (a fresh context restarts you next tick).
      (b) fast-forward verify/<id>-* to impl/<id>-* and confirm the diff is EMPTY. A
          verify branch that lags gates stale code and burns a whole round on a finding
          that was already fixed.
+     (c) for every criterion in LOOP.md whose verify_via names HTTP or a UI element,
+         grep the new/changed test files for a test client, a route call, or that
+         element. Zero matches on any such criterion is a block, named specifically —
+         "criterion 3 (verify_via: HTTP) has no route-level test in the diff." This is
+         a mechanical check on imports and calls, not a read of test quality. Found live
+         on #11: six green tests, all calling ThreadStore directly, zero touching a
+         route — four of six criteria were untested at the level they were written.
      Then spawn VERIFIER (strong model, on verify/<id>-*, Write and Edit disallowed). Run verifier_command. The VERIFIER posts its own raw
      verdict to the PR with gh — you must not relay it, since you only receive its summary
      and relaying would paraphrase the thing that gates the merge.
