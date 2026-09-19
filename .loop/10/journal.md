@@ -129,3 +129,82 @@ parse_id_token   call_args: call({'access_token': 'test-10-access', 'token_type'
 (`userinfo` shows inside the recorded token arg only because authlib assigns `token["userinfo"] = userinfo` on that same dict object AFTER the call; the mock's return_value never contained it. `nonce` equals the nonce in the login redirect; `leeway=120`/`claims_options` are authlib's own kwargs, i.e. the internal call.)
 Results: `pytest -q tests/test_auth.py -k google` -> `11 passed, 21 deselected, 1 warning in 1.06s`; `pytest -q` -> `126 passed, 1 warning in 4.47s`.
 Next: mutations A-H, one at a time, working-tree only, reverted after each.
+
+### Iteration 2 (mutation proof A-H, final tests) — 2026-09-19 ~23:05Z
+Tests changed after iteration 1: in the two state-rejection tests `mock_fetch.assert_not_called()` / `mock_parse.assert_not_called()` now run BEFORE the status/body asserts, so a removed state check is diagnosed by "token exchange was attempted", not by a body mismatch. Mutation matrix below was run AFTER that change, against the final tests. Method: /scratchpad/mutate.py applies ONE string replacement to the working-tree app/main.py, runs `pytest -q tests/test_auth.py -k google`, restores the file; nothing mutated was ever committed (`git status` clean for main.py afterwards, diffed).
+Pristine: `11 passed, 21 deselected, 1 warning in 1.03s`.
+```
+=== MUTATION A redirect /?login=google -> /totally-wrong
+FAILED tests/test_auth.py::test_google_oauth_callback_with_valid_state_and_verified_email
+1 failed, 10 passed, 21 deselected, 1 warning in 0.95s
+=== MUTATION B set_session_cookie not called
+FAILED tests/test_auth.py::test_google_oauth_callback_with_valid_state_and_verified_email
+1 failed, 10 passed, 21 deselected, 1 warning in 0.92s
+=== MUTATION C email_verified check disabled
+FAILED tests/test_auth.py::test_google_oauth_callback_rejects_unverified_email
+1 failed, 10 passed, 21 deselected, 1 warning in 0.94s
+=== MUTATION D redirect to Google with no state
+FAILED ...::test_google_oauth_login_redirects_to_google_with_state
+FAILED ...::test_google_oauth_callback_with_valid_state_and_verified_email
+FAILED ...::test_google_oauth_callback_parses_id_token_once_via_authlib_with_nonce
+FAILED ...::test_google_oauth_callback_rejects_mismatched_state
+FAILED ...::test_google_oauth_callback_rejects_unverified_email
+FAILED ...::test_google_login_adds_auth_identity_to_existing_password_user
+FAILED ...::test_password_signup_rejected_for_google_only_email
+7 failed, 4 passed, 21 deselected, 1 warning in 0.90s
+=== MUTATION E route calls oauth.google.parse_id_token(token) directly
+FAILED ...::test_google_oauth_callback_with_valid_state_and_verified_email
+FAILED ...::test_google_oauth_callback_parses_id_token_once_via_authlib_with_nonce   (E assert 2 == 1)
+FAILED ...::test_google_oauth_callback_rejects_unverified_email
+FAILED ...::test_google_login_adds_auth_identity_to_existing_password_user
+4 failed, 7 passed, 21 deselected, 1 warning in 1.07s
+=== MUTATION F state validation removed (fetch_access_token(code=...) instead of authorize_access_token(request))
+FAILED ...::test_google_oauth_callback_with_valid_state_and_verified_email
+FAILED ...::test_google_oauth_callback_parses_id_token_once_via_authlib_with_nonce
+FAILED ...::test_google_oauth_callback_rejects_missing_state
+FAILED ...::test_google_oauth_callback_rejects_mismatched_state
+FAILED ...::test_google_oauth_callback_rejects_unverified_email
+FAILED ...::test_google_login_adds_auth_identity_to_existing_password_user
+FAILED ...::test_password_signup_rejected_for_google_only_email
+7 failed, 4 passed, 21 deselected, 1 warning in 1.06s
+=== MUTATION G SessionMiddleware session_cookie=session
+FAILED ...::test_google_oauth_callback_with_valid_state_and_verified_email
+FAILED ...::test_google_oauth_callback_rejects_unverified_email
+2 failed, 9 passed, 21 deselected, 1 warning in 1.00s
+=== MUTATION H oauth.register without the scope
+FAILED ...::test_google_oauth_login_redirects_to_google_with_state
+FAILED ...::test_google_oauth_callback_with_valid_state_and_verified_email
+FAILED ...::test_google_oauth_callback_parses_id_token_once_via_authlib_with_nonce
+FAILED ...::test_google_oauth_callback_rejects_unverified_email
+FAILED ...::test_google_login_adds_auth_identity_to_existing_password_user
+FAILED ...::test_password_signup_rejected_for_google_only_email
+6 failed, 5 passed, 21 deselected, 1 warning in 0.98s
+```
+F, state tests only (proves the assert_not_called guard itself, not a body mismatch):
+```
+>               mock_fetch.assert_not_called()
+E           AssertionError: Expected 'fetch_access_token' to not have been called. Called 1 times.
+E           Calls: [call(code='test-code')].
+>               mock_fetch.assert_not_called()  # first on purpose, see missing-state test
+E           AssertionError: Expected 'fetch_access_token' to not have been called. Called 1 times.
+FAILED tests/test_auth.py::test_google_oauth_callback_rejects_missing_state
+FAILED tests/test_auth.py::test_google_oauth_callback_rejects_mismatched_state
+2 failed, 30 deselected, 1 warning in 0.46s
+```
+G raw: `E AssertionError: Expected exactly 1 `session` Set-Cookie: ['session=eyJ1c2VyX2lkIjozNDMz...; HttpOnly; Max-Age=2592000; Path=/; SameSite=lax', 'session=null; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; httponly; samesite=lax']` -> `assert 2 == 1` (the verified live collision from HAZARD 1).
+H raw: `AssertionError: scope must contain openid: None` (login test) and `Expected 302, got 400: {"error":"token validation failed"}` (callback tests; without openid scope authlib generates no nonce so token["userinfo"] is never set - the production failure the verifier found in 2c, now reproduced by a test).
+All 8 mutations RED.
+
+Isolation / order / suite (all on the final tree):
+```
+each of the 11 google tests ALONE: 1 passed (x11; incl. 3 non-HTTP ones)
+REVERSED order:  11 passed, 1 warning in 0.95s
+ROTATED order:   11 passed, 1 warning in 0.92s
+pytest -q tests/test_auth.py -k google:  11 passed, 21 deselected, 1 warning in 0.94s
+pytest -q tests/test_auth.py:            32 passed, 1 warning in 1.90s
+pytest -q (full):                        126 passed, 1 warning in 4.48s
+leftover `test-10-%` users in dev DB after all runs: 0
+```
+Scope audit: `git diff 14bf366 --name-only` -> .loop/10/journal.md, app/main.py (only inside `# region: google-oauth`: register client_kwargs, removed `except Exception`), tests/test_auth.py. No edits outside owned regions. No network reached: every callback test that gets past state validation patches fetch_access_token+parse_id_token; state-rejection tests patch them and assert not called.
+Not covered / caveats: (1) only the mocks prove wiring, Google itself is untested by design; (2) criterion 2(a)'s "same attrs as POST /login" is checked via the shared set_session_cookie helper plus one-`session`-cookie and /me round-trip, not a byte comparison against /login; (3) with the bare except gone, a non-OAuthError raised inside authorize_access_token (e.g. network failure to Google) now propagates as a 500 rather than 400 - per HAZARD 4.
+Status: every self-test green, every HTTP criterion exercised via the test client, A-H all red -> setting agent:gate-pending.

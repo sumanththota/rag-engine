@@ -613,11 +613,12 @@ async def test_google_oauth_callback_rejects_missing_state():
             with stack:
                 resp = await client.get("/auth/google/callback?code=test-code", follow_redirects=False)
 
-            assert 400 <= resp.status_code < 500, f"Expected 4xx for missing state, got {resp.status_code}"
-            assert resp.json() == {"error": "authorization failed"}
-            # If the state check were removed these would have been called (or hit Google's live endpoint).
+            # First assertion on purpose: if the state check were removed the token exchange WOULD be
+            # attempted (mocked here, so it never touches Google's live endpoint) and this fails.
             mock_fetch.assert_not_called()
             mock_parse.assert_not_called()
+            assert 400 <= resp.status_code < 500, f"Expected 4xx for missing state, got {resp.status_code}"
+            assert resp.json() == {"error": "authorization failed"}
             assert _auth_session_set_cookies(resp) == [], "auth cookie must not be set on state failure"
             me = await client.get("/me")
             assert me.json()["user"] is None
@@ -643,10 +644,10 @@ async def test_google_oauth_callback_rejects_mismatched_state():
                     "/auth/google/callback?code=test-code&state=test-10-wrong-state", follow_redirects=False
                 )
 
+            mock_fetch.assert_not_called()  # first on purpose, see missing-state test
+            mock_parse.assert_not_called()
             assert 400 <= resp.status_code < 500, f"Expected 4xx for mismatched state, got {resp.status_code}"
             assert resp.json() == {"error": "authorization failed"}
-            mock_fetch.assert_not_called()
-            mock_parse.assert_not_called()
             assert _auth_session_set_cookies(resp) == [], "auth cookie must not be set on state failure"
             me = await client.get("/me")
             assert me.json()["user"] is None
