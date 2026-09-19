@@ -625,6 +625,7 @@
             </div>
             <label for="q-input" class="visually-hidden">Your question</label>
             <textarea name="question" id="q-input" placeholder="Example: What are the candidacy timeline requirements for my program?" required autocomplete="off"></textarea>
+            <input type="hidden" id="thread-id-field" name="thread_id" value="">
             <div class="btns">
               <button type="submit" class="btn btn-primary" id="ask-btn">Send</button>
               <button type="button" class="btn" id="btn-stop" disabled>Stop</button>
@@ -991,22 +992,69 @@
   }
 
   function deleteThread(id) {
-    let state = loadState();
-    state.threads = state.threads.filter(function (t) { return t.id !== id; });
-    if (state.activeThreadId === id) {
-      state.activeThreadId = state.threads[0] ? state.threads[0].id : null;
+    // For server-backed threads (numeric IDs), call the delete route
+    if (!isNaN(id) && id > 0) {
+      fetch("/threads/" + id, { method: "DELETE" })
+        .then(function(response) {
+          if (response.ok) {
+            // Remove from local state after server delete succeeds
+            let state = loadState();
+            state.threads = state.threads.filter(function (t) { return t.id !== id; });
+            if (state.activeThreadId === id) {
+              state.activeThreadId = state.threads[0] ? state.threads[0].id : null;
+            }
+            if (!state.threads.length) {
+              const t = { id: uuid(), title: "New chat", updatedAt: Date.now(), messages: [] };
+              state.threads = [t];
+              state.activeThreadId = t.id;
+            } else if (!state.activeThreadId) {
+              state.activeThreadId = state.threads[0].id;
+            }
+            try { saveState(state); } catch (e) {}
+            renderThreadList();
+            renderMessagesFromState();
+            setStreamingUi(false);
+          }
+        })
+        .catch(function(err) {
+          console.error("Failed to delete thread:", err);
+          // Fall back to local delete on error
+          let state = loadState();
+          state.threads = state.threads.filter(function (t) { return t.id !== id; });
+          if (state.activeThreadId === id) {
+            state.activeThreadId = state.threads[0] ? state.threads[0].id : null;
+          }
+          if (!state.threads.length) {
+            const t = { id: uuid(), title: "New chat", updatedAt: Date.now(), messages: [] };
+            state.threads = [t];
+            state.activeThreadId = t.id;
+          } else if (!state.activeThreadId) {
+            state.activeThreadId = state.threads[0].id;
+          }
+          try { saveState(state); } catch (e) {}
+          renderThreadList();
+          renderMessagesFromState();
+          setStreamingUi(false);
+        });
+    } else {
+      // For local threads (UUID), just update localStorage
+      let state = loadState();
+      state.threads = state.threads.filter(function (t) { return t.id !== id; });
+      if (state.activeThreadId === id) {
+        state.activeThreadId = state.threads[0] ? state.threads[0].id : null;
+      }
+      if (!state.threads.length) {
+        const t = { id: uuid(), title: "New chat", updatedAt: Date.now(), messages: [] };
+        state.threads = [t];
+        state.activeThreadId = t.id;
+      } else if (!state.activeThreadId) {
+        state.activeThreadId = state.threads[0].id;
+      }
+      try { saveState(state); } catch (e) {}
+      renderThreadList();
+      renderMessagesFromState();
+      setStreamingUi(false);
     }
-    if (!state.threads.length) {
-      const t = { id: uuid(), title: "New chat", updatedAt: Date.now(), messages: [] };
-      state.threads = [t];
-      state.activeThreadId = t.id;
-    } else if (!state.activeThreadId) {
-      state.activeThreadId = state.threads[0].id;
-    }
-    try { saveState(state); } catch (e) {}
-    renderThreadList();
-    renderMessagesFromState();
-    setStreamingUi(false);
   }
 
   function newChat() {
@@ -1201,6 +1249,11 @@
     if (!q) {
       evt.preventDefault();
       return;
+    }
+    // Set thread_id to the current active thread (for logged-in users with persistent threads)
+    const state = loadState();
+    if (state.activeThreadId) {
+      document.getElementById("thread-id-field").value = state.activeThreadId;
     }
     document.getElementById("ask-btn").disabled = true;
   });

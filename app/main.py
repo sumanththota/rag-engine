@@ -577,6 +577,7 @@ def create_app(
             form = await request.form()
             question = str(form.get("question", "")).strip()
             model_id = str(form.get("model_id", "")).strip()
+            raw_thread_id = str(form.get("thread_id", "")).strip()
 
             if not question:
                 return PlainTextResponse("question is required", status_code=400)
@@ -588,15 +589,24 @@ def create_app(
                 len(question), model_id, extra={"stage": "http"},
             )
 
-            # Create thread if user is logged in
+            # Reuse existing thread if provided, or create new one for logged-in users
             thread_id = None
             if user is not None and thread_store is not None:
-                try:
-                    thread_id = await thread_store.create_thread(user.id, title=None)
-                except ThreadsError as err:
-                    logger.warning(
-                        "thread create failed err=%s", err, extra={"stage": "http"},
-                    )
+                # If thread_id was provided, reuse it (must be a valid thread)
+                if raw_thread_id:
+                    try:
+                        thread_id = int(raw_thread_id)
+                    except ValueError:
+                        thread_id = None
+
+                # If no thread_id provided (or invalid), create a new one
+                if thread_id is None:
+                    try:
+                        thread_id = await thread_store.create_thread(user.id, title=None)
+                    except ThreadsError as err:
+                        logger.warning(
+                            "thread create failed err=%s", err, extra={"stage": "http"},
+                        )
 
             escaped_question = html.escape(question)
             escaped_query = urllib.parse.quote_plus(question)
@@ -853,6 +863,86 @@ def create_app(
         finally:
             if not reset_deferred:
                 trace_id_var.reset(trace_token)
+
+    # ---- threads (logged-in persistence, ticket 11) -----------------------
+
+    @app.get("/threads")
+    async def list_threads_route(
+        user: User | None = Depends(_get_current_user_optional),
+    ):
+        """List all threads for the logged-in user."""
+        if user is None:
+            return JSONResponse({"error": "not authenticated"}, status_code=401)
+
+        try:
+            threads = await thread_store.list_threads(user.id)
+            return JSONResponse([
+                {
+                    "id": t.id,
+                    "user_id": t.user_id,
+                    "title": t.title,
+                    "created_at": t.created_at.isoformat(),
+                    "updated_at": t.updated_at.isoformat(),
+                    "deleted_at": t.deleted_at.isoformat() if t.deleted_at else None,
+                }
+                for t in threads
+            ])
+        except ThreadsError as err:
+            logger.warning("list_threads failed err=%s", err, extra={"stage": "http"})
+            return JSONResponse({"error": "failed to list threads"}, status_code=500)
+
+    @app.get("/threads/{thread_id}")
+    async def get_thread_route(
+        thread_id: int,
+        user: User | None = Depends(_get_current_user_optional),
+    ):
+        """Get a specific thread with its messages."""
+        if user is None:
+            return JSONResponse({"error": "not authenticated"}, status_code=401)
+
+        try:
+            thread = await thread_store.get_thread(thread_id, user.id)
+            if thread is None:
+                return JSONResponse({"error": "thread not found"}, status_code=404)
+            return JSONResponse({
+                "id": thread.id,
+                "user_id": thread.user_id,
+                "title": thread.title,
+                "created_at": thread.created_at.isoformat(),
+                "updated_at": thread.updated_at.isoformat(),
+                "deleted_at": thread.deleted_at.isoformat() if thread.deleted_at else None,
+                "messages": [
+                    {
+                        "id": m.id,
+                        "role": m.role,
+                        "content": m.content,
+                        "sources": m.sources,
+                        "created_at": m.created_at.isoformat(),
+                    }
+                    for m in thread.messages
+                ]
+            })
+        except ThreadsError as err:
+            logger.warning("get_thread failed err=%s", err, extra={"stage": "http"})
+            return JSONResponse({"error": "failed to get thread"}, status_code=500)
+
+    @app.delete("/threads/{thread_id}")
+    async def delete_thread_route(
+        thread_id: int,
+        user: User | None = Depends(_get_current_user_optional),
+    ):
+        """Soft-delete a thread (sets deleted_at)."""
+        if user is None:
+            return JSONResponse({"error": "not authenticated"}, status_code=401)
+
+        try:
+            deleted = await thread_store.soft_delete_thread(thread_id, user.id)
+            if not deleted:
+                return JSONResponse({"error": "thread not found"}, status_code=404)
+            return JSONResponse({"success": True})
+        except ThreadsError as err:
+            logger.warning("delete_thread failed err=%s", err, extra={"stage": "http"})
+            return JSONResponse({"error": "failed to delete thread"}, status_code=500)
 
     # ---- traces review (ticket 4) ---------------------------------------
 

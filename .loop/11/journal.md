@@ -110,3 +110,23 @@ Merging impl/11-persist-threads to get round 1 work. Implementing fixes in prior
 2. Add HTTP routes for list/detail/delete
 3. Wire frontend to use real routes
 4. Add HTTP-level tests with proper isolation
+
+**Priority 1: chat_start fix — DONE**
+- Modified chat_start to accept optional thread_id from form
+- If thread_id provided and valid (integer > 0), reuse it
+- Only create new thread if no thread_id provided
+
+**Priority 2: HTTP routes — DONE**
+- Added GET /threads (list threads for logged-in user)
+- Added GET /threads/{thread_id} (detail with messages)
+- Added DELETE /threads/{thread_id} (soft-delete)
+- All routes check auth and return 401 if not authenticated
+- All routes return 404 if thread not found (ownership check via store)
+- Returns JSON responses
+
+**Priority 3: Frontend wiring — DONE**
+- Added hidden thread_id field to form
+- Modified deleteThread() to call DELETE /threads/{id} for server threads
+- Falls back to localStorage for local threads
+- Form submission sets thread_id field from active thread
+- Handles both authenticated and anonymous scenarios
