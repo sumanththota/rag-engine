@@ -906,6 +906,7 @@ def create_app(
                     "id": t.id,
                     "user_id": t.user_id,
                     "title": t.title,
+                    "client_id": t.client_id,
                     "created_at": t.created_at.isoformat(),
                     "updated_at": t.updated_at.isoformat(),
                     "deleted_at": t.deleted_at.isoformat() if t.deleted_at else None,
@@ -936,6 +937,7 @@ def create_app(
                 "id": thread.id,
                 "user_id": thread.user_id,
                 "title": thread.title,
+                "client_id": thread.client_id,
                 "created_at": thread.created_at.isoformat(),
                 "updated_at": thread.updated_at.isoformat(),
                 "deleted_at": thread.deleted_at.isoformat() if thread.deleted_at else None,
@@ -982,16 +984,20 @@ def create_app(
         user: User | None = Depends(_get_current_user_optional),
     ):
         """Idempotently syncs a batch of client-side threads into server storage.
-        Only available for logged-in users."""
+        Only available for logged-in users.
+
+        Response: {"synced": <new_thread_count>, "threads": [{"client_id": ..., "id": ...}, ...]}
+        The threads list covers every submitted thread (both new and pre-existing).
+        """
         if user is None:
             return JSONResponse({"error": "not authenticated"}, status_code=401)
 
         if not client_threads:
-            return JSONResponse({"synced": 0})
+            return JSONResponse({"synced": 0, "threads": []})
 
         try:
-            synced_count = await thread_store.sync_threads(user.id, client_threads)
-            return JSONResponse({"synced": synced_count})
+            synced_count, thread_mappings = await thread_store.sync_threads(user.id, client_threads)
+            return JSONResponse({"synced": synced_count, "threads": thread_mappings})
         except ThreadsError as err:
             logger.warning("sync_threads failed err=%s", err, extra={"stage": "http"})
             return JSONResponse({"error": "failed to sync threads"}, status_code=500)

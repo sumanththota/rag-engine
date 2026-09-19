@@ -1449,45 +1449,68 @@
   async function afterLogin() {
     // Post-login sync: upload local threads to server, then hydrate from server.
     // HAZARD: this must run SYNC → THEN HYDRATE to avoid data loss (sync=upload client, hydrate=download server).
+    // CRITICAL: only send string-id threads (numeric ids came from previous hydrations and should not re-upload).
+    // CRITICAL: if sync fails, do NOT hydrate (would overwrite local threads with incomplete server state).
     // Every auth path calls this one function (shared call site).
+    let syncSucceeded = false;
     try {
       const state = loadState();
       if (state.threads && state.threads.length > 0) {
-        // Convert state.threads to the sync payload (id, title, messages in the right shape)
-        const syncPayload = state.threads.map(function (t) {
-          return {
-            id: t.id,
-            title: t.title,
-            messages: t.messages.map(function (m) {
-              return {
-                role: m.role,
-                content: m.content,
-                sources: m.sources
-              };
-            })
-          };
+        // Filter to only string-id threads (numeric ids are from server, do not re-upload)
+        const stringIdThreads = state.threads.filter(function (t) {
+          return typeof t.id === 'string';
         });
-        try {
-          const syncResp = await fetch("/threads/sync", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(syncPayload)
+
+        if (stringIdThreads.length > 0) {
+          // Convert string-id threads to the sync payload (id, title, messages in the right shape)
+          const syncPayload = stringIdThreads.map(function (t) {
+            return {
+              id: t.id,
+              title: t.title,
+              messages: t.messages.map(function (m) {
+                return {
+                  role: m.role,
+                  content: m.content,
+                  sources: m.sources
+                };
+              })
+            };
           });
-          if (!syncResp.ok) {
-            console.warn("Failed to sync threads:", syncResp.status);
+          try {
+            const syncResp = await fetch("/threads/sync", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(syncPayload)
+            });
+            if (syncResp.ok) {
+              syncSucceeded = true;
+            } else {
+              console.warn("Failed to sync threads:", syncResp.status);
+            }
+          } catch (err) {
+            console.warn("Error syncing threads:", err);
           }
-        } catch (err) {
-          console.warn("Error syncing threads:", err);
+        } else {
+          // No string-id threads to sync, but still need to hydrate
+          syncSucceeded = true;
         }
+      } else {
+        // No threads to sync, but still need to hydrate
+        syncSucceeded = true;
       }
     } catch (err) {
       console.warn("afterLogin sync phase failed:", err);
     }
-    // THEN hydrate from server (after sync completes)
-    try {
-      await hydratThreadsFromServer();
-    } catch (err) {
-      console.warn("afterLogin hydrate phase failed:", err);
+
+    // THEN hydrate from server (after sync completes, only if sync succeeded or was skipped)
+    if (syncSucceeded) {
+      try {
+        await hydratThreadsFromServer();
+      } catch (err) {
+        console.warn("afterLogin hydrate phase failed:", err);
+      }
+    } else {
+      console.warn("afterLogin: skipping hydration due to sync failure");
     }
   }
 

@@ -152,3 +152,17 @@ Two things the design had to add that were not in the question, flagged for revi
 
 Escalation trigger 1 ("schema/migration touches an existing table") is APPROVED for exactly: ADD COLUMN IF NOT EXISTS client_id text + UNIQUE index (user_id, client_id). Any other schema change still escalates. Implementer stays on the default tier (haiku): #12 has no verify rounds yet, so the MODEL-TIER rate rule does not apply; the first rejection re-opens that question.
 
+## Implementer — 2026-09-20T10:35:00Z (REWORK PASS)
+
+**Start:** Fresh baseline check before rework pass.
+
+Done: Verified baseline (119 passed tests) from commit 45b7e11 on origin/impl/12-sync-threads-login. Read the full journal history including the orchestrator's findings and human-approved design. Key points from previous pass:
+
+- **Defect found:** First implementation used integer ids in tests, never exercised the real client shape (UUID strings) → 422 on real browser evidence with `crypto.randomUUID()`
+- **Data loss:** afterLogin() hydrated even after failed sync → overwrote anonymous Thread with empty server data
+- **Design approved:** client_id column (nullable text), UNIQUE(user_id, client_id) index, ClientThread.id is string 1-128 chars, INSERT ... ON CONFLICT by (user_id, client_id), response maps client_id to server id
+- **Data-loss guard:** afterLogin() must NOT hydrate after sync fails
+- **String-id filter:** afterLogin() sends ONLY string-id Threads (numeric server ids post-login, should not re-upload)
+- **No message dedup:** Remove any role+content message dedup logic
+
+**Next:** Implement the approved design with proper schema, models, and tests using real string client ids.
