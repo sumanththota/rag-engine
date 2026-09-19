@@ -911,3 +911,55 @@ async def test_oversized_thread_id_returns_404_not_500():
             )
     finally:
         await _cleanup(pool, email)
+
+
+async def test_get_and_delete_thread_oversized_id_returns_404_not_500():
+    """Same bug, same fix, on the other two routes that take a thread_id.
+
+    Round-6 verifier NEEDS_WORK: /chat/start and /chat/stream were fixed to
+    return 404 for an out-of-bigint-range thread_id, but GET /threads/{id} and
+    DELETE /threads/{id} still return 500 for the same input — this is the
+    second route pair to need this exact fix after the first only covered two
+    of four routes. This test pins BOTH routes and BOTH the maximum valid
+    bigint boundary (max+1) and a grossly oversized value, matching the
+    verifier's own probe inputs, so a fix that only handles one shape (e.g.
+    only the grossly-oversized string, not the off-by-one boundary) still
+    fails it."""
+    pool = await _pool()
+    auth_store = AuthStore(pool)
+    thread_store = ThreadStore(pool)
+    email = "test-11-oversized-id-get-delete@example.com"
+    oversized_ids = [
+        "9223372036854775808",  # int64 max (9223372036854775807) + 1
+        "99999999999999999999",  # grossly oversized
+    ]
+
+    try:
+        await auth_store.ensure_schema()
+        await thread_store.ensure_schema()
+        await _cleanup(pool, email)
+
+        app = _app_with_fake_llm(auth_store, thread_store, pool, tokens=["ab"])
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            signup = await client.post(
+                "/signup", json={"email": email, "password": "test123"}
+            )
+            assert signup.status_code == 201
+            await client.post("/login", json={"email": email, "password": "test123"})
+
+            for oversized_id in oversized_ids:
+                get_resp = await client.get(f"/threads/{oversized_id}")
+                assert get_resp.status_code == 404, (
+                    f"GET /threads/{oversized_id} must return 404, got "
+                    f"{get_resp.status_code}"
+                )
+
+                delete_resp = await client.delete(f"/threads/{oversized_id}")
+                assert delete_resp.status_code == 404, (
+                    f"DELETE /threads/{oversized_id} must return 404, got "
+                    f"{delete_resp.status_code}"
+                )
+    finally:
+        await _cleanup(pool, email)
