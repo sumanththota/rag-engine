@@ -244,3 +244,31 @@ Fixes deployed for full end-to-end thread_id round-trip:
 
 **Scope Check:** Only modified app/templates/index.html and tests/test_threads.py
 (app/main.py and app/threads.py unchanged from prior pass — already correct)
+
+## Fixed acceptance test authored by orchestrator — 2026-09-19T00:00:00Z
+
+Per human instruction: wrote `test_conversation_persists_across_turns_and_devices` in
+tests/test_threads.py myself, before spawning a 4th implementer pass, so this criterion
+is fixed rather than left for an implementer to write (and possibly weaken) its own
+version of. Two real turns through POST /chat/start + GET /chat/stream (using a fake
+provider client + a stubbed RagService.build_prompt so the real write_threads() path
+actually executes), asserting: thread_id reused across turns unconditionally (no `if`
+guard per CONVENTIONS.md's new rule), 4 thread_messages rows with sources on the
+assistant side, and GET /threads/{id} returning all 4 messages.
+
+**Result: this test PASSES on current code (impl/11-persist-threads @ 00b7236),
+contrary to the expectation it would be red.** Ran 3x consecutively plus alone/-k —
+consistently green. Full suite (112 tests) also green 3x.
+
+This means round 3's *backend* contract (chat_start thread reuse, chat_stream's
+write_threads background task, GET /threads/{id}'s message serialization) is actually
+correct end-to-end at the HTTP layer. The remaining known defect — `index.html`'s
+`hydratThreadsFromServer()` hardcoding `messages: []` instead of loading detail via
+GET /threads/{id}, and `switchThread()` never fetching message content — lives
+entirely in frontend JS. This repo has no JS test harness (no playwright/jest/selenium
+config found), so no pytest-level test, including this one, can exercise that bug.
+Verifying the frontend fix will need either a manual/browser check, or a lighter-weight
+static check on the JS source (e.g. grep for a fetch to /threads/{id} inside whatever
+function populates message content) — flagged for human decision, not something to
+silently paper over by declaring this test sufficient for criterion 1's "refresh shows
+the same conversation" when the frontend path it depends on remains unverified.
