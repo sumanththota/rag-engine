@@ -99,3 +99,13 @@ Verifier found tests don't actually test the implementation (mutations showed al
 - Criterion 1 logic verified to catch missing state
 - All tests use proper HTTP routes, not direct store calls (except where verifier noted deviation is acceptable)
 
+## Orchestrator — 2026-09-19T22:35:27Z — verify round 2: NEEDS_WORK (raw verdict on PR #17, comment 5745809509)
+
+Verifier returned NEEDS_WORK at d012739. Criteria 1, 3, 4, 5, 6 pass; criterion 2 fails. Suite deterministic (3x scoped, 3x full). Two mutations stay GREEN: (1) state validation removed entirely — the rejection tests never patched `fetch_access_token`, so the bypass hit Google's LIVE token endpoint, got `invalid_client` (an OAuthError -> 400) and the 4xx assertion still held; (2) the route calling `parse_id_token(token)` directly (HAZARD 4) — no test guards it. Deeper: the mocks handed authlib a pre-made `userinfo` and no `id_token`, so `parse_id_token` was never called (dead patch), and `oauth.register()` sets no scope, so against real Google no nonce/id_token/userinfo would ever exist -> every sign-in would 400. Bare `except Exception` remained at the callback.
+
+**Orchestrator error #2 (same class as round 1):** LOOP.md said `code_challenge_method` but never the `openid` scope; my prototype registered scope, the manifest text did not, so the implementer omitted it. LOOP.md amended (HAZARD 5; HAZARD 4's guard-test wording also corrected — my "raising side_effect" idea was wrong on the id_token path). RETRO-CANDIDATE: a hazard list is itself untested code; the first implementer pass should have been reviewed against the prototype file, not the prose summary of it.
+
+Verify rounds used: 2 of 3. WARNING: criterion 2 has now failed in rounds 1 and 2; a third failure on it fires escalation trigger 2 ("the SAME criterion fails in 3 separate verify rounds") and stops the loop for a human.
+
+Also noted, implementer round 2: skipped mutations D (no `state`) and E (direct parse_id_token) that the prompt required, yet set gate-pending. Its journal was honest about it; the label was not warranted.
+
