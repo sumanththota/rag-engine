@@ -107,6 +107,53 @@ def _thread_id_from_chat_start_html(html: str) -> int | None:
         return None
 
 
+def _app_with_fake_llm(
+    auth_store: AuthStore,
+    thread_store: ThreadStore,
+    pool: asyncpg.Pool,
+    tokens: list[str],
+) -> FastAPI:
+    """Same shape as _app_with_auth, but with a fake provider client + a stubbed
+    RagService.build_prompt so /chat/stream's generation step completes
+    deterministically and actually reaches write_threads() — needed by any test
+    that must drive a real turn through the streaming endpoint, not just
+    /chat/start."""
+    rag_service = RagService(
+        store=PostgresStore(pool=None),
+        embed_client=OllamaClient("http://127.0.0.1:1"),
+        collection="handbook_chunks",
+        top_k=10,
+        pdf_path="unused.pdf",
+    )
+
+    async def _fake_build_prompt(question: str) -> BuildPromptResult:
+        return BuildPromptResult(
+            prompt=f"prompt for: {question}",
+            results=[SearchResult(text="handbook excerpt", page=1, score=0.9)],
+            rewrite_outcome=RewriteOutcome(status=RewriteOutcomeStatus.NOT_CONFIGURED),
+        )
+
+    rag_service.build_prompt = _fake_build_prompt
+
+    settings = Settings(
+        handbook_path="unused.pdf",
+        database_url=_DSN,
+        secret_key=_SECRET_KEY,
+        app_env="development",
+    )
+    return create_app(
+        rag_service=rag_service,
+        provider_clients={"ollama": _FakeStreamClient(tokens)},
+        api_keys={},
+        embed_client=OllamaClient("http://127.0.0.1:1"),
+        store=PostgresStore(pool=None),
+        trace_store=TraceStore(pool),
+        thread_store=thread_store,
+        settings=settings,
+        auth_store=auth_store,
+    )
+
+
 # ---- Fixed acceptance test (CONVENTIONS.md §7): the conversation-persistence ----
 # ---- contract, as ONE unit of work — not four separately-passable criteria. ----
 
@@ -261,75 +308,221 @@ async def test_conversation_persists_across_turns_and_devices():
 
 
 # ---- Criterion 1: Thread_id round-trip through chat_start -> client state -> next turn ----
+# (superseded by test_conversation_persists_across_turns_and_devices above, which drives
+# two real turns and asserts the round-trip unconditionally — see round-4 verifier
+# Finding 3: this test's single-turn check sat behind `if first_thread_id:` and its
+# name promised coverage — "persists_across_turns" — it never actually exercised.
+# Removed rather than patched, since the fixed test already supersedes it in full.)
 
 
-async def test_thread_id_round_trip_persists_across_turns():
-    """Criterion 1 & 2: /chat/start returns thread_id, client persists it, next turn reuses it.
+# ---- SECURITY: write-side ownership (CONVENTIONS.md §7) ----------------------
+# Round-4 verifier Finding 1: chat_start reused ANY thread_id it was given with no
+# ownership check, and write_threads() had no user_id/deleted_at guard on the write
+# path (only reads were filtered by owner) — so User B could inject messages into
+# User A's Thread, and User A would then see B's content in their own conversation.
 
-    This tests the core round-trip: server creates thread with numeric id,
-    returns it to client via startAnswerStream, client stores it in state,
-    next turn sends it back to chat_start, chat_start reuses same thread.
-    Without this, turn 2 always creates a new thread (turn fragmentation).
-    """
+
+async def test_cross_user_cannot_write_into_another_users_thread():
+    """User B must not be able to write into User A's Thread by supplying A's
+    thread_id to /chat/start or /chat/stream. Asserts the write is rejected AND
+    that A's thread_messages are unchanged after the attempt — not just that B's
+    own read views are filtered (criteria 4/5's read-side checks already covered
+    that and still missed this)."""
     pool = await _pool()
     auth_store = AuthStore(pool)
     thread_store = ThreadStore(pool)
-    email = "test-11-roundtrip-1@example.com"
+    email_a = "test-11-security-a@example.com"
+    email_b = "test-11-security-b@example.com"
+
+    try:
+        await auth_store.ensure_schema()
+        await thread_store.ensure_schema()
+        await _cleanup(pool, email_a, email_b)
+
+        app = _app_with_fake_llm(auth_store, thread_store, pool, tokens=["ab"])
+
+        async with _async_client(app) as client_a:
+            signup_a = await client_a.post(
+                "/signup", json={"email": email_a, "password": "test123"}
+            )
+            assert signup_a.status_code == 201
+            user_a_id = signup_a.json()["id"]
+            await client_a.post("/login", json={"email": email_a, "password": "test123"})
+
+            start_a = await client_a.post(
+                "/chat/start",
+                data={"question": "A question", "model_id": "ollama_gemma4_26b"},
+            )
+            assert start_a.status_code == 200
+            thread_id_a = _thread_id_from_chat_start_html(start_a.text)
+            assert thread_id_a is not None and thread_id_a > 0
+
+            stream_a = await client_a.get(
+                "/chat/stream",
+                params={
+                    "question": "A question",
+                    "model_id": "ollama_gemma4_26b",
+                    "started_at_ms": "0",
+                    "trace_id": "test-11-trace-a",
+                    "thread_id": str(thread_id_a),
+                },
+            )
+            assert stream_a.status_code == 200
+
+        detail_before = await thread_store.get_thread(thread_id_a, user_a_id)
+        assert detail_before is not None
+        messages_before = len(detail_before.messages)
+        assert messages_before == 2, messages_before
+
+        # User B — separate session — supplies A's thread_id to BOTH endpoints.
+        async with _async_client(app) as client_b:
+            signup_b = await client_b.post(
+                "/signup", json={"email": email_b, "password": "test123"}
+            )
+            assert signup_b.status_code == 201
+            user_b_id = signup_b.json()["id"]
+            await client_b.post("/login", json={"email": email_b, "password": "test123"})
+
+            start_b = await client_b.post(
+                "/chat/start",
+                data={
+                    "question": "B INJECTED",
+                    "model_id": "ollama_gemma4_26b",
+                    "thread_id": str(thread_id_a),
+                },
+            )
+            assert start_b.status_code == 200
+            thread_id_b = _thread_id_from_chat_start_html(start_b.text)
+            # Unconditional: B must never be handed back A's thread_id.
+            assert thread_id_b != thread_id_a, (
+                "chat_start echoed back another user's thread_id to a non-owner "
+                f"(thread_id_a={thread_id_a!r})"
+            )
+
+            # Even bypassing chat_start, a spoofed thread_id straight to
+            # chat_stream must not let B's turn land in A's thread.
+            stream_b = await client_b.get(
+                "/chat/stream",
+                params={
+                    "question": "B INJECTED",
+                    "model_id": "ollama_gemma4_26b",
+                    "started_at_ms": "0",
+                    "trace_id": "test-11-trace-b",
+                    "thread_id": str(thread_id_a),
+                },
+            )
+            assert stream_b.status_code == 200
+
+        detail_after = await thread_store.get_thread(thread_id_a, user_a_id)
+        assert detail_after is not None
+        assert len(detail_after.messages) == messages_before, (
+            "CROSS-USER WRITE: user B's turn landed in user A's thread — "
+            f"had {messages_before} messages before B's attempt, now has "
+            f"{len(detail_after.messages)}: "
+            f"{[m.content for m in detail_after.messages]}"
+        )
+        for m in detail_after.messages:
+            assert "B INJECTED" not in m.content, (
+                f"user B's content leaked into user A's thread: {m.content!r}"
+            )
+
+        b_threads = await thread_store.list_threads(user_b_id)
+        assert all(t.id != thread_id_a for t in b_threads), (
+            "user B's own thread list includes user A's thread_id"
+        )
+    finally:
+        await _cleanup(pool, email_a, email_b)
+
+
+async def test_cannot_write_into_soft_deleted_thread():
+    """Same hole, same cause (round-4 verifier Finding 1): reusing a thread_id
+    must also fail once that thread is soft-deleted — a client that still has
+    the old id (e.g. a stale tab) must not be able to resurrect writes into it."""
+    pool = await _pool()
+    auth_store = AuthStore(pool)
+    thread_store = ThreadStore(pool)
+    email = "test-11-security-deleted@example.com"
 
     try:
         await auth_store.ensure_schema()
         await thread_store.ensure_schema()
         await _cleanup(pool, email)
 
-        # Pre-cleanup
-        await _cleanup(pool, email)
+        app = _app_with_fake_llm(auth_store, thread_store, pool, tokens=["ab"])
 
-        # Test: signup, verify logged in, simulate POST /chat/start (which returns thread_id)
-        async with _async_client(_app_with_auth(auth_store, thread_store)) as client:
-            # Signup
-            signup = await client.post("/signup", json={"email": email, "password": "test123"})
+        async with _async_client(app) as client:
+            signup = await client.post(
+                "/signup", json={"email": email, "password": "test123"}
+            )
             assert signup.status_code == 201
             user_id = signup.json()["id"]
+            await client.post("/login", json={"email": email, "password": "test123"})
 
-            # Login
-            login = await client.post("/login", json={"email": email, "password": "test123"})
-            assert login.status_code == 200
-
-            # POST /chat/start (no thread_id provided, so creates new thread)
-            # Note: We're using a minimal mock because /chat/start requires streaming to work
-            # but we can verify the thread was created via GET /threads
-            chat_start = await client.post(
+            start1 = await client.post(
                 "/chat/start",
-                data={"question": "Test question?", "model_id": "ollama_gemma4_26b"},
-                follow_redirects=False,
+                data={"question": "Before delete", "model_id": "ollama_gemma4_26b"},
             )
-            assert chat_start.status_code == 200
+            thread_id = _thread_id_from_chat_start_html(start1.text)
+            assert thread_id is not None and thread_id > 0
 
-            # Parse thread_id from response HTML script tag
-            # chat_start returns: window.startAnswerStream("...", "...", "...", "...", "thread_id");
-            response_text = chat_start.text
-            # Extract numeric thread_id from startAnswerStream call (5th parameter if present)
-            import re
-            match = re.search(r'startAnswerStream\("([^"]+)","([^"]+)","([^"]+)","([^"]+)","([^"]+)"\)', response_text)
-            first_thread_id = None
-            if match:
-                encoded_thread_id = match.group(5)
-                try:
-                    first_thread_id = int(encoded_thread_id)
-                except ValueError:
-                    first_thread_id = None
+            stream1 = await client.get(
+                "/chat/stream",
+                params={
+                    "question": "Before delete",
+                    "model_id": "ollama_gemma4_26b",
+                    "started_at_ms": "0",
+                    "trace_id": "test-11-trace-del-1",
+                    "thread_id": str(thread_id),
+                },
+            )
+            assert stream1.status_code == 200
 
-            # Verify GET /threads shows exactly one thread
-            threads_list = await client.get("/threads")
-            assert threads_list.status_code == 200
-            threads = threads_list.json()
-            assert len(threads) >= 1, "Should have at least one thread after chat_start"
+            detail_before = await thread_store.get_thread(thread_id, user_id)
+            assert detail_before is not None
+            messages_before = len(detail_before.messages)
+            assert messages_before == 2, messages_before
 
-            # The most recent thread should be the one we just created
-            most_recent = threads[0]
-            assert most_recent["id"] > 0, "Thread id should be numeric (server-issued)"
-            if first_thread_id:
-                assert most_recent["id"] == first_thread_id, "Should be the same thread_id returned by chat_start"
+            delete_resp = await client.delete(f"/threads/{thread_id}")
+            assert delete_resp.status_code == 200
+
+            # Same client, same owner — reuses the now-deleted thread_id anyway.
+            start2 = await client.post(
+                "/chat/start",
+                data={
+                    "question": "After delete",
+                    "model_id": "ollama_gemma4_26b",
+                    "thread_id": str(thread_id),
+                },
+            )
+            assert start2.status_code == 200
+            reused_id = _thread_id_from_chat_start_html(start2.text)
+            assert reused_id != thread_id, (
+                "chat_start reused a soft-deleted thread_id instead of minting a new one "
+                f"(deleted thread_id={thread_id!r})"
+            )
+
+            stream2 = await client.get(
+                "/chat/stream",
+                params={
+                    "question": "After delete",
+                    "model_id": "ollama_gemma4_26b",
+                    "started_at_ms": "0",
+                    "trace_id": "test-11-trace-del-2",
+                    "thread_id": str(thread_id),
+                },
+            )
+            assert stream2.status_code == 200
+
+        # The deleted thread's own row count must not have grown — get_thread
+        # returns None for a soft-deleted thread (by design), so assert directly
+        # via a raw count against thread_messages instead.
+        raw_count = await pool.fetchval(
+            "SELECT count(*) FROM thread_messages WHERE thread_id = $1", thread_id
+        )
+        assert raw_count == messages_before, (
+            f"writes landed in a soft-deleted thread: had {messages_before} rows, "
+            f"now has {raw_count}"
+        )
     finally:
         await _cleanup(pool, email)
 
@@ -513,7 +706,15 @@ async def test_cannot_access_other_users_thread_via_http():
 
 
 async def test_anonymous_chat_does_not_write_threads():
-    """Criterion 6: Anonymous chat (no login) should not write to threads table."""
+    """Criterion 6: anonymous (no login) chat must not write to threads or
+    thread_messages, and must not receive a thread_id — including when a request
+    tries to spoof one directly on /chat/stream.
+
+    Round-4 verifier Finding 2: the prior version of this test never called
+    /chat/stream (only /chat/start, which alone writes nothing) and never counted
+    rows, so a mutant that let anonymous /chat/start create a thread under another
+    user still passed it; its one thread_id assertion also sat behind `if match:`,
+    which this rewrite removes (CONVENTIONS.md §7)."""
     pool = await _pool()
     auth_store = AuthStore(pool)
     thread_store = ThreadStore(pool)
@@ -522,28 +723,69 @@ async def test_anonymous_chat_does_not_write_threads():
         await auth_store.ensure_schema()
         await thread_store.ensure_schema()
 
-        async with _async_client(_app_with_auth(auth_store, thread_store)) as client:
-            # Anonymous (no login): POST /chat/start
-            chat_resp = await client.post(
-                "/chat/start",
-                data={"question": "Anonymous question?", "model_id": "ollama_gemma4_26b"},
-            )
-            assert chat_resp.status_code == 200
+        app = _app_with_fake_llm(auth_store, thread_store, pool, tokens=["anon", " answer"])
 
-            # Anonymous: no thread_id should be in response (or should be None/falsy)
-            # The response should not include a thread_id in the startAnswerStream call
-            import re
-            # If anonymous, there should be no thread_id parameter in the script
-            response_text = chat_resp.text
-            # Check that startAnswerStream is called with only 4 args (not 5)
-            match = re.search(r'startAnswerStream\("([^"]+)","([^"]+)","([^"]+)","([^"]+)"(?:,"([^"]+)")?\)', response_text)
-            if match:
-                # If there's a 5th arg, it should be empty or falsy
-                fifth_arg = match.group(5)
-                assert not fifth_arg or fifth_arg == "", "Anonymous chat should not have thread_id"
+        check_start = await pool.fetchval("SELECT now()")
+
+        async with _async_client(app) as client:
+            start = await client.post(
+                "/chat/start",
+                data={"question": "test-11-anon-marker question", "model_id": "ollama_gemma4_26b"},
+            )
+            assert start.status_code == 200
+            thread_id = _thread_id_from_chat_start_html(start.text)
+            # Unconditional: absence of a 5th arg (or a non-numeric one) is the only
+            # correct outcome for an anonymous turn — not a case to skip past.
+            assert thread_id is None, (
+                "anonymous chat_start must not return a thread_id "
+                f"(got {thread_id!r} from: {start.text!r})"
+            )
+
+            stream = await client.get(
+                "/chat/stream",
+                params={
+                    "question": "test-11-anon-marker question",
+                    "model_id": "ollama_gemma4_26b",
+                    "started_at_ms": "0",
+                    "trace_id": "test-11-trace-anon",
+                },
+            )
+            assert stream.status_code == 200
+
+            # A spoofed thread_id straight on chat/stream must not let an
+            # anonymous request write into (or create) any thread either.
+            spoofed = await client.get(
+                "/chat/stream",
+                params={
+                    "question": "test-11-anon-marker question 2",
+                    "model_id": "ollama_gemma4_26b",
+                    "started_at_ms": "0",
+                    "trace_id": "test-11-trace-anon-2",
+                    "thread_id": "999999999",
+                },
+            )
+            assert spoofed.status_code == 200
 
             # Verify: GET /threads as anonymous should return 401
             threads_resp = await client.get("/threads")
             assert threads_resp.status_code == 401, "Anonymous GET /threads should return 401"
+
+        # No thread_messages row anywhere carrying this test's marker content —
+        # immune to concurrent activity from other parallel tickets on the shared
+        # dev DB, unlike a raw global count.
+        marker_count = await pool.fetchval(
+            "SELECT count(*) FROM thread_messages WHERE content LIKE '%test-11-anon-marker%'"
+        )
+        assert marker_count == 0, (
+            f"anonymous chat wrote {marker_count} thread_messages row(s) carrying "
+            "this test's marker content"
+        )
+        # No threads row created during this test's execution window at all.
+        new_threads = await pool.fetchval(
+            "SELECT count(*) FROM threads WHERE created_at > $1", check_start
+        )
+        assert new_threads == 0, (
+            f"anonymous chat created {new_threads} threads row(s) during this test"
+        )
     finally:
         await pool.close()
