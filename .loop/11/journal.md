@@ -448,3 +448,42 @@ shared dev DB from this check.
 playwright/jest/selenium). Every future UI-only criterion will need this same
 orchestrator-driven manual-browser step until that gap is actually closed — it is not
 something round 4 or any single ticket should be expected to route around on its own.
+
+## Orchestrator response to round-4 verifier NEEDS_WORK — 2026-09-19T20:00:00Z
+
+Verifier's raw verdict on PR #15 found a real security hole (Finding 1): chat_start
+reused ANY thread_id it was given with no ownership check, and write_threads() had no
+user_id/deleted_at guard — a logged-in User B could inject messages into User A's
+Thread by supplying A's thread_id, and A would then see B's content in their own
+conversation. Findings 2/3 were two more instances of the conditional-guarded-assertion
+anti-pattern (CONVENTIONS.md §7), and Finding 4 flagged a stale uv.lock.
+
+Per instruction, addressed 2/3/4 directly (mechanical/test work, no feature-code
+judgment needed) before spawning anyone for the actual fix (Finding 1):
+
+- Added `test_cross_user_cannot_write_into_another_users_thread` and
+  `test_cannot_write_into_soft_deleted_thread` — both **unconditionally RED** against
+  current code, confirming the hole exists exactly as the verifier's probe found:
+  `assert 461 != 461` (cross-user) and `assert 469 != 469` (soft-delete reuse).
+- Rewrote `test_anonymous_chat_does_not_write_threads` to actually drive
+  `/chat/stream` (incl. a spoofed thread_id) and assert zero new `threads`/
+  `thread_messages` rows via a content-marker + creation-timestamp check (safe
+  under the shared dev DB's concurrent parallel-ticket writes, unlike a raw global
+  count) — no conditional guard on the thread_id assertion.
+- Removed `test_thread_id_round_trip_persists_across_turns` entirely rather than
+  patch its `if first_thread_id:` guard (verifier Finding 3) — it was fully
+  redundant with `test_conversation_persists_across_turns_and_devices`, which
+  already covers the same claim unconditionally and across two real turns.
+- Regenerated `uv.lock` (`uv lock`): `source = { virtual = "." }` ->
+  `{ editable = "." }`, matching pyproject.toml's `[build-system]` table. Full
+  suite still green (111 passed) alongside the 2 new, correctly-red tests.
+
+Full suite now: 111 passed, 2 failed (both new, both expected to fail until Finding 1
+is fixed) — 113 tests total.
+
+**Not doing myself:** the actual fix to `app/main.py` (chat_start / chat_stream /
+write_threads ownership resolution) — that's feature code, spawning an implementer
+for exactly that, instructed to make only these two new tests pass and touch nothing
+else. Per the human's instruction, criteria 1-3's prior "pass" is not being taken as
+settled — these two new tests are the acceptance bar for Finding 1, not a re-run of
+the old ones alone.
