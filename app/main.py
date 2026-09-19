@@ -1165,12 +1165,11 @@ def create_app(
                     logger.warning("google callback unexpected error: %s", err, extra={"stage": "http"})
                     return JSONResponse({"error": "authorization failed"}, status_code=400)
 
-                # Parse id_token to get user info (email, email_verified)
-                try:
-                    # In tests, parse_id_token is mocked; in production, it parses the JWT
-                    userinfo = await oauth.google.parse_id_token(token)
-                except Exception as err:
-                    logger.warning("google parse_id_token failed: %s", err, extra={"stage": "http"})
+                # Get user info from authorize_access_token's parsed id_token (email, email_verified)
+                # authorize_access_token already validates and parses the id_token, returning userinfo in token["userinfo"]
+                userinfo = token.get("userinfo", {})
+                if not userinfo:
+                    logger.warning("google callback: no userinfo in token", extra={"stage": "http"})
                     return JSONResponse({"error": "token validation failed"}, status_code=400)
 
                 email = userinfo.get("email", "").strip().lower()
