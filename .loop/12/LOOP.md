@@ -6,7 +6,10 @@ spec_link: "https://github.com/sumanththota/rag-engine/issues/12"   # immutable 
 dag:
   depends_on: ["11"]   # needs threads/thread_messages tables and a working save/list path to upsert into
   blocks: ["18"]   # login UI calls the afterLogin() this ticket defines
-acceptance_criteria:   # copied verbatim from the issue body; each must be able to FAIL
+readiness:   # orchestrator-scored 2026-09-19 against the FLP rubric, after the fixes below
+  acceptance_criteria: 4   # 1,2,4 are HTTP-falsifiable; 3 is browser-only and gated on #18 (rated down for that)
+  context: 5               # hazard, shared-call-site ruling and check (d) levels all spelled out
+acceptance_criteria:   # 1-4 copied verbatim from the issue body; 5 ADDED by the orchestrator 2026-09-19 (standing criterion, not in the issue). Each must be able to FAIL.
   - text: "POST /threads/sync accepts a batch of local Threads (id/title/messages) and upserts each into threads/thread_messages for the logged-in user"
     verify_via: "HTTP — POST /threads/sync through a test client as a logged-in user, then GET /threads and /threads/{id} to confirm the rows"
   - text: "Logging in a second time with the same local Threads does not create duplicates (idempotent by Thread id)"
@@ -15,16 +18,17 @@ acceptance_criteria:   # copied verbatim from the issue body; each must be able 
     verify_via: "BROWSER — no JS harness in this repo; loop.md check (d) three-level evidence (see Context). GATED on #18: not met until #18 lands."
   - text: "A Thread created anonymously, then synced after login, appears identically in the server-side Thread list (same id, title, messages, in order)"
     verify_via: "HTTP — sync a client-shape payload, then GET /threads/{id} and assert identical id/title/ordered messages"
+  - text: "ORCHESTRATOR-ADDED (standing, every feature): the FULL suite is green"
+    verify_via: "pytest -q, no -k filter — verifier_command below is narrower than the blast radius of a main.py/threads.py/index.html change (found on #9: full suite caught a regression the scoped run missed)"
 verifier_command: "pytest -q tests/test_threads.py -k sync"
 escalation_triggers:
   - "schema/migration touches an existing table"
   - "the SAME criterion fails in 3 separate verify rounds"
-  - "any edit outside app/threads.py or the agent's own main.py region"   # RE-AUTHORIZED (orchestrator 2026-09-19), no escalation: edits to app/templates/index.html SCOPED TO afterLogin() and the ?login=google boot-time detection ONLY. Any other index.html change — UI, styling, unrelated JS — still escalates.
+  - "any edit outside the owned regions listed under Context (app/threads.py, tests/test_threads.py, main.py `# region: threads-sync`, index.html afterLogin()/?login=google only)"   # RE-AUTHORIZED (orchestrator 2026-09-19), no escalation: edits to app/templates/index.html SCOPED TO afterLogin() and the ?login=google boot-time detection ONLY. Any other index.html change — UI, styling, unrelated JS — still escalates.
+  - "a criterion names verify_via: HTTP or UI and the diff's tests never import a test client or call a route/element for it"   # mechanical: loop.md check (c)
 budgets: { max_iterations: 8, max_verify_rounds: 3, max_tokens: 400000, wall_clock: "2h" }
 model_routing: { implementer: "haiku", verifier: "opus", planner: "opus" }
-state: "ready-for-agent"   # GitHub label is already set, but depends_on ["11"] is not yet merged —
-                            # the orchestrator's readiness check (label AND depends_on merged) keeps
-                            # this from actually being picked until #11 lands
+state: "ready-for-agent"   # GitHub label set; depends_on ["11"] is merged. Criterion 3 stays BLOCKED on #18 (ruling on how that interacts with gate-pending is outstanding).
 branches: { impl: "impl/12-sync-threads-login", verify: "verify/12-sync-threads-login" }
 ---
 ## Context (progressive disclosure — links, not inlined bodies)
@@ -37,4 +41,10 @@ branches: { impl: "impl/12-sync-threads-login", verify: "verify/12-sync-threads-
   3. **Manual artifact pasted in the journal (self-report is not evidence):** in a real browser, seed a real Thread in localStorage, log in (password path via `fetch('/login')` in the console + calling `afterLogin()` — works without #18's form; and a `/?login=google` load), then paste actual output: localStorage `state.threads` BEFORE and AFTER, and the `GET /threads` response body, showing the seeded Thread survived with identical id/title/messages. "Confirmed working" is a fail.
   This repo having no JS harness is a standing gap (loop.md), not something to route around; note it in the journal, don't fix it here.
 - **CRITERION 3 IS GATED ON #18 (login UI):** index.html has no login form or auth code at all (only `/me` in hydration); #9 shipped API endpoints only. Issue #18 (https://github.com/sumanththota/rag-engine/issues/18, depends_on #9 and #12) adds the form and calls `afterLogin()`. Criterion 3 ("Client calls this endpoint automatically right after login succeeds") **MUST NOT be marked met until #18 has landed** — by implementer, verifier, or orchestrator. Until then report it as BLOCKED/UNVERIFIED, never "met". #12 owns the definition of `afterLogin()` (sync → then hydrate) and the `?login=google` boot-marker path; #18 only calls it. Do NOT build a login form in #12. Criteria 1, 2, 4 are not gated. This criterion is browser-only and NOT reachable by `pytest -k sync` (same JS/backend gap as #11 retro). It gets the same check (d) three-level treatment as the hydration race above — but "met" additionally waits on #18, so until then the honest status is BLOCKED, not "unverifiable" and not "met". State exactly how any claim about it was verified. (Split already done per #11 retro: #18 is the `depends_on` edge for the browser-side login UI.)
-- Hotspot files & owned regions: extends app/threads.py (from #11) — coordinate with #11's owned region; client-side login hook that triggers the upload (file not specified in the issue — implementer should locate the existing post-login client code and flag if ambiguous).
+- **OWNED REGIONS (exhaustive — loop.md check (a) diffs against exactly this list):**
+  - `app/threads.py` — extend (from #11); reuse #11's shared thread_id bounds-check function, do not duplicate it.
+  - `tests/test_threads.py` — add `sync`-named tests; use `test-12-*` fixtures; do not edit #11's existing tests.
+  - `app/main.py` between `# region: threads-sync (#12)` and `# endregion: threads-sync` (between the DELETE /threads/{thread_id} route and the traces section). Markers exist on master; put `POST /threads/sync` there.
+  - `app/templates/index.html`: `afterLogin()` and the `?login=google` boot-time detection ONLY (client post-login code is in index.html; no other file).
+  - `.loop/12/journal.md`.
+  - NOT owned, still escalates: any other index.html change, `app/config.py`, `pyproject.toml`, anything else.
