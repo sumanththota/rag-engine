@@ -218,3 +218,15 @@ Verifier at d59e873: criteria 1, 3, 4, 5, 6 PASS; criterion 2 sub-clauses (b) an
 Journal-counted iterations: implementer passes 3 (1 original + 2 fix) plus orchestrator entries; max_iterations 8 is not the binding cap here. Rejection rate for #10: 3 of 3 verifier rounds. Implementer model for the last fix pass was overridden to sonnet (manual's >40% rule); frontmatter unchanged (haiku).
 
 Pattern worth the retro: each round's reject was a real gap the previous round's tests could not see, and each was found by mutation testing, not by reading tests. Two of the three rounds trace to orchestrator guidance errors (parse_id_token seam; missing openid scope). RETRO-CANDIDATE: "a criterion phrased as a clause list (state, verified, same cookie, same attrs) needs one mutation per clause listed in the manifest itself, so the implementer sees the full kill-list in round 1".
+
+## Orchestrator — 2026-09-19T23:32:45Z — HUMAN DECISION: one bounded round 4 APPROVED (escalation resolved as "three distinct defects, route confirmed correct")
+
+Escalation (trigger 2 + max_verify_rounds) was reported to the human. Decision, verbatim scope: "Approved: one bounded round 4 on #10. Scope: the single assertion at ~tests/test_auth.py:559 (cookie attrs match POST /login byte for byte) plus a mutation proving it. Nothing else changes. If this also fails, stop — no round 5, report back for a real decision instead."
+
+Classification for the retro (per the loop.md TRIGGER 2 NUANCE): NOT a stuck implementer. Three DIFFERENT defects across rounds 1-3, each found by mutation testing, with the shipped route confirmed byte-identical to POST /login on unmutated HEAD. A human approving one bounded extra round is the case that nuance describes; a spec rewrite is not indicated.
+
+Bounds enforced by the orchestrator at the gate, mechanically: the round-4 diff (from 80a4e21) may touch ONLY tests/test_auth.py and .loop/10/journal.md. ANY change under app/, pyproject.toml or .env.example is out of scope -> agent:blocked, no verifier. No round 5 under any outcome; a fail stops for a human.
+
+Model: implementer stays on sonnet (model_routing recorded at 80a4e21); the fix is one assertion plus mutation proofs and does not warrant a higher tier.
+
+Verify rounds used: 3 of 3 (+1 human-approved extension).
