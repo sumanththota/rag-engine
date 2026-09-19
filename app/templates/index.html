@@ -1446,6 +1446,51 @@
     }
   }
 
+  async function afterLogin() {
+    // Post-login sync: upload local threads to server, then hydrate from server.
+    // HAZARD: this must run SYNC → THEN HYDRATE to avoid data loss (sync=upload client, hydrate=download server).
+    // Every auth path calls this one function (shared call site).
+    try {
+      const state = loadState();
+      if (state.threads && state.threads.length > 0) {
+        // Convert state.threads to the sync payload (id, title, messages in the right shape)
+        const syncPayload = state.threads.map(function (t) {
+          return {
+            id: t.id,
+            title: t.title,
+            messages: t.messages.map(function (m) {
+              return {
+                role: m.role,
+                content: m.content,
+                sources: m.sources
+              };
+            })
+          };
+        });
+        try {
+          const syncResp = await fetch("/threads/sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(syncPayload)
+          });
+          if (!syncResp.ok) {
+            console.warn("Failed to sync threads:", syncResp.status);
+          }
+        } catch (err) {
+          console.warn("Error syncing threads:", err);
+        }
+      }
+    } catch (err) {
+      console.warn("afterLogin sync phase failed:", err);
+    }
+    // THEN hydrate from server (after sync completes)
+    try {
+      await hydratThreadsFromServer();
+    } catch (err) {
+      console.warn("afterLogin hydrate phase failed:", err);
+    }
+  }
+
   initMarked();
   syncModelLabel();
   let boot = loadState();
@@ -1455,10 +1500,22 @@
   renderMessagesFromState();
   setStreamingUi(false);
 
-  // Hydrate threads from server for logged-in users
-  hydratThreadsFromServer().catch(function (err) {
-    console.warn("Hydration failed:", err);
-  });
+  // Detect ?login=google (OAuth callback) and call afterLogin instead of hydrate directly
+  // Otherwise, for non-login loads, hydrate from server if user is already logged in
+  const params = new URLSearchParams(window.location.search);
+  if (params.has("login") && params.get("login") === "google") {
+    // OAuth callback: sync local threads then hydrate
+    afterLogin().catch(function (err) {
+      console.warn("afterLogin failed:", err);
+    });
+  } else {
+    // Normal boot: hydrate if already logged in (for session persistence)
+    hydratThreadsFromServer().catch(function (err) {
+      console.warn("Hydration failed:", err);
+    });
+  }
+
+  window.afterLogin = afterLogin;
 })();
   </script>
 </body>

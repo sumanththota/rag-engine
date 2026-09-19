@@ -69,6 +69,22 @@ class ThreadDetail(BaseModel):
     messages: list[ThreadMessage]
 
 
+class ClientThreadMessage(BaseModel):
+    """A message from the client's local Thread (no id/created_at required)."""
+
+    role: Literal["user", "assistant"]
+    content: str
+    sources: list[dict] | None = None
+
+
+class ClientThread(BaseModel):
+    """A Thread synced from the client's localStorage."""
+
+    id: int
+    title: str | None = None
+    messages: list[ClientThreadMessage]
+
+
 class ThreadStore:
     """Postgres-backed writer for the `threads` and `thread_messages` tables.
     Persists logged-in users' multi-turn conversations."""
@@ -294,3 +310,81 @@ class ThreadStore:
                 f"soft_delete_thread failed for thread_id={thread_id}: {e}"
             ) from e
         return result == "UPDATE 1"
+
+    async def sync_threads(self, user_id: int, client_threads: list["ClientThread"]) -> int:
+        """Idempotently upserts a batch of client-side threads and their messages.
+        Returns the number of new rows created (threads + messages combined).
+
+        For each thread in the batch:
+        - If a thread with the same id doesn't exist, create it (with the user's id)
+        - For each message, if it doesn't exist in that thread, add it
+
+        This ensures that replaying the same batch multiple times is safe.
+
+        Args:
+            user_id: The user who owns these threads.
+            client_threads: Threads synced from localStorage (with client-generated ids).
+
+        Returns:
+            Number of new rows inserted (threads + messages).
+        """
+        total_rows_created = 0
+        try:
+            async with self._pool.acquire() as conn:
+                for client_thread in client_threads:
+                    # Check if thread exists
+                    existing = await conn.fetchval(
+                        "SELECT id FROM threads WHERE id = $1 AND user_id = $2",
+                        client_thread.id,
+                        user_id,
+                    )
+                    if existing is None:
+                        # Thread doesn't exist, create it
+                        await conn.execute(
+                            """
+                            INSERT INTO threads (id, user_id, title)
+                            VALUES ($1, $2, $3)
+                            """,
+                            client_thread.id,
+                            user_id,
+                            client_thread.title,
+                        )
+                        total_rows_created += 1
+
+                    # For each message, check if it exists and insert if not
+                    for msg_idx, client_msg in enumerate(client_thread.messages):
+                        # Check if a message with identical role and content exists
+                        # (simple dedup: same content = same message)
+                        existing_msg = await conn.fetchval(
+                            """
+                            SELECT id FROM thread_messages
+                            WHERE thread_id = $1 AND role = $2 AND content = $3
+                            """,
+                            client_thread.id,
+                            client_msg.role,
+                            client_msg.content,
+                        )
+                        if existing_msg is None:
+                            # Message doesn't exist, insert it
+                            sources_json = json.dumps(client_msg.sources) if client_msg.sources else None
+                            await conn.execute(
+                                """
+                                INSERT INTO thread_messages (thread_id, role, content, sources)
+                                VALUES ($1, $2, $3, $4)
+                                """,
+                                client_thread.id,
+                                client_msg.role,
+                                client_msg.content,
+                                sources_json,
+                            )
+                            total_rows_created += 1
+
+                    # Update the thread's updated_at timestamp
+                    await conn.execute(
+                        "UPDATE threads SET updated_at = now() WHERE id = $1",
+                        client_thread.id,
+                    )
+        except _DB_ERRORS as e:
+            raise ThreadsError(f"sync_threads failed for user_id={user_id}: {e}") from e
+
+        return total_rows_created

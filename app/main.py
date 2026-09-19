@@ -46,7 +46,7 @@ from app.llm import OpenAICompatibleClient
 from app.logging_utils import configure_logging, new_trace_id, trace_id_var
 from app.rag import RagError, RagService
 from app.store import PostgresStore
-from app.threads import ThreadStore, ThreadsError, _is_valid_thread_id
+from app.threads import ThreadStore, ThreadsError, _is_valid_thread_id, ClientThread
 from app.traces import (
     AnnotationStatus,
     GenerateStep,
@@ -976,6 +976,25 @@ def create_app(
             return JSONResponse({"error": "failed to delete thread"}, status_code=500)
 
     # region: threads-sync (#12) -- only ticket #12 edits between these markers
+    @app.post("/threads/sync")
+    async def sync_threads_route(
+        client_threads: list[ClientThread],
+        user: User | None = Depends(_get_current_user_optional),
+    ):
+        """Idempotently syncs a batch of client-side threads into server storage.
+        Only available for logged-in users."""
+        if user is None:
+            return JSONResponse({"error": "not authenticated"}, status_code=401)
+
+        if not client_threads:
+            return JSONResponse({"synced": 0})
+
+        try:
+            synced_count = await thread_store.sync_threads(user.id, client_threads)
+            return JSONResponse({"synced": synced_count})
+        except ThreadsError as err:
+            logger.warning("sync_threads failed err=%s", err, extra={"stage": "http"})
+            return JSONResponse({"error": "failed to sync threads"}, status_code=500)
     # endregion: threads-sync
 
     # ---- traces review (ticket 4) ---------------------------------------

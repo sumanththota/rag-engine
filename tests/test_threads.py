@@ -963,3 +963,268 @@ async def test_get_and_delete_thread_oversized_id_returns_404_not_500():
                 )
     finally:
         await _cleanup(pool, email)
+
+
+# ---- Criterion 1 & 2 & 4: POST /threads/sync (ticket #12) ----
+
+async def test_sync_threads_accepts_batch_and_upserts():
+    """Criterion 1: POST /threads/sync accepts a batch of local Threads
+    (id/title/messages) and upserts each into threads/thread_messages for the logged-in user.
+    Then GET /threads and /threads/{id} confirm the rows exist with correct data."""
+    pool = await _pool()
+    auth_store = AuthStore(pool)
+    thread_store = ThreadStore(pool)
+    email = "test-12-sync-batch@example.com"
+
+    try:
+        await auth_store.ensure_schema()
+        await thread_store.ensure_schema()
+        await _cleanup(pool, email)
+
+        async with _async_client(_app_with_auth(auth_store, thread_store)) as client:
+            # Sign up and log in
+            signup = await client.post(
+                "/signup", json={"email": email, "password": "test123"}
+            )
+            assert signup.status_code == 201
+            await client.post("/login", json={"email": email, "password": "test123"})
+
+            # Sync a batch of client-generated threads
+            sync_payload = [
+                {
+                    "id": 1001,
+                    "title": "Synced chat 1",
+                    "messages": [
+                        {"role": "user", "content": "Hello", "sources": None},
+                        {"role": "assistant", "content": "Hi there", "sources": [{"text": "example"}]},
+                    ],
+                },
+                {
+                    "id": 1002,
+                    "title": "Synced chat 2",
+                    "messages": [
+                        {"role": "user", "content": "Another question", "sources": None},
+                    ],
+                },
+            ]
+            sync_resp = await client.post(
+                "/threads/sync",
+                json=sync_payload,
+            )
+            assert sync_resp.status_code == 200, f"sync should succeed, got {sync_resp.status_code}"
+            sync_data = sync_resp.json()
+            assert sync_data.get("synced", 0) > 0, "sync should report rows created"
+
+            # Verify threads appear in GET /threads
+            list_resp = await client.get("/threads")
+            assert list_resp.status_code == 200
+            threads_list = list_resp.json()
+            assert any(t["id"] == 1001 for t in threads_list), "Thread 1001 should be in list"
+            assert any(t["id"] == 1002 for t in threads_list), "Thread 1002 should be in list"
+
+            # Verify thread detail via GET /threads/{id}
+            detail_resp = await client.get("/threads/1001")
+            assert detail_resp.status_code == 200
+            detail = detail_resp.json()
+            assert detail["id"] == 1001
+            assert detail["title"] == "Synced chat 1"
+            assert len(detail["messages"]) == 2
+            assert detail["messages"][0]["role"] == "user"
+            assert detail["messages"][0]["content"] == "Hello"
+            assert detail["messages"][1]["role"] == "assistant"
+            assert detail["messages"][1]["content"] == "Hi there"
+            assert detail["messages"][1]["sources"] == [{"text": "example"}]
+
+            # Verify second thread detail
+            detail_resp2 = await client.get("/threads/1002")
+            assert detail_resp2.status_code == 200
+            detail2 = detail_resp2.json()
+            assert detail2["id"] == 1002
+            assert detail2["title"] == "Synced chat 2"
+            assert len(detail2["messages"]) == 1
+            assert detail2["messages"][0]["content"] == "Another question"
+    finally:
+        await _cleanup(pool, email)
+        await pool.close()
+
+
+async def test_sync_threads_idempotent_by_thread_id():
+    """Criterion 2: Logging in a second time (or syncing twice) with the same local
+    Threads does not create duplicates (idempotent by Thread id). POST the same batch
+    twice, then GET /threads and confirm one row per Thread id."""
+    pool = await _pool()
+    auth_store = AuthStore(pool)
+    thread_store = ThreadStore(pool)
+    email = "test-12-sync-idempotent@example.com"
+
+    try:
+        await auth_store.ensure_schema()
+        await thread_store.ensure_schema()
+        await _cleanup(pool, email)
+
+        async with _async_client(_app_with_auth(auth_store, thread_store)) as client:
+            # Sign up and log in
+            signup = await client.post(
+                "/signup", json={"email": email, "password": "test123"}
+            )
+            assert signup.status_code == 201
+            await client.post("/login", json={"email": email, "password": "test123"})
+
+            # Sync a batch
+            sync_payload = [
+                {
+                    "id": 2001,
+                    "title": "Idempotent test",
+                    "messages": [
+                        {"role": "user", "content": "Q1", "sources": None},
+                        {"role": "assistant", "content": "A1", "sources": None},
+                    ],
+                }
+            ]
+            sync_resp1 = await client.post("/threads/sync", json=sync_payload)
+            assert sync_resp1.status_code == 200
+
+            # Get thread count after first sync
+            list_resp1 = await client.get("/threads")
+            threads_1 = list_resp1.json()
+            count_1 = len([t for t in threads_1 if t["id"] == 2001])
+            assert count_1 == 1, "Should have exactly 1 thread 2001 after first sync"
+
+            detail_resp1 = await client.get("/threads/2001")
+            detail_1 = detail_resp1.json()
+            msg_count_1 = len(detail_1["messages"])
+            assert msg_count_1 == 2, "Should have 2 messages after first sync"
+
+            # Sync the SAME batch again (idempotency test)
+            sync_resp2 = await client.post("/threads/sync", json=sync_payload)
+            assert sync_resp2.status_code == 200
+
+            # Verify no duplicates were created
+            list_resp2 = await client.get("/threads")
+            threads_2 = list_resp2.json()
+            count_2 = len([t for t in threads_2 if t["id"] == 2001])
+            assert count_2 == 1, "Should still have exactly 1 thread 2001 after second sync (idempotent)"
+
+            detail_resp2 = await client.get("/threads/2001")
+            detail_2 = detail_resp2.json()
+            msg_count_2 = len(detail_2["messages"])
+            assert msg_count_2 == 2, "Should still have 2 messages (idempotent, no duplicates)"
+    finally:
+        await _cleanup(pool, email)
+        await pool.close()
+
+
+async def test_sync_threads_anonymous_then_login():
+    """Criterion 4: A Thread created anonymously (client-side, with a client-generated id),
+    then synced after login, appears identically in the server-side Thread list
+    (same id, title, messages, in order)."""
+    pool = await _pool()
+    auth_store = AuthStore(pool)
+    thread_store = ThreadStore(pool)
+    email = "test-12-sync-anon-to-login@example.com"
+
+    try:
+        await auth_store.ensure_schema()
+        await thread_store.ensure_schema()
+        await _cleanup(pool, email)
+
+        async with _async_client(_app_with_auth(auth_store, thread_store)) as client:
+            # Simulate anonymous user with a local thread in localStorage
+            # (in a real browser, this would be in localStorage; we simulate it by creating the exact payload)
+            anon_thread = {
+                "id": 3001,
+                "title": "Anonymous discussion",
+                "messages": [
+                    {"role": "user", "content": "First question from anon", "sources": None},
+                    {"role": "assistant", "content": "First answer to anon", "sources": [{"text": "doc A", "page": 1}]},
+                    {"role": "user", "content": "Follow-up from anon", "sources": None},
+                    {"role": "assistant", "content": "Follow-up answer", "sources": [{"text": "doc B", "page": 2}]},
+                ],
+            }
+
+            # Sign up and log in (now user is logged in)
+            signup = await client.post(
+                "/signup", json={"email": email, "password": "test123"}
+            )
+            assert signup.status_code == 201
+            await client.post("/login", json={"email": email, "password": "test123"})
+
+            # Sync the anonymous thread
+            sync_resp = await client.post("/threads/sync", json=[anon_thread])
+            assert sync_resp.status_code == 200
+
+            # Verify the thread appears in the server list
+            list_resp = await client.get("/threads")
+            assert list_resp.status_code == 200
+            threads_list = list_resp.json()
+            assert any(t["id"] == 3001 for t in threads_list), "Synced thread should appear in list"
+
+            # Verify the thread detail is identical
+            detail_resp = await client.get("/threads/3001")
+            assert detail_resp.status_code == 200
+            detail = detail_resp.json()
+
+            # Check id
+            assert detail["id"] == 3001, f"ID mismatch: expected 3001, got {detail['id']}"
+
+            # Check title
+            assert detail["title"] == "Anonymous discussion", (
+                f"Title mismatch: expected 'Anonymous discussion', got {detail['title']!r}"
+            )
+
+            # Check messages in order
+            assert len(detail["messages"]) == 4, (
+                f"Expected 4 messages, got {len(detail['messages'])}"
+            )
+            roles = [m["role"] for m in detail["messages"]]
+            assert roles == ["user", "assistant", "user", "assistant"], (
+                f"Role sequence mismatch: {roles}"
+            )
+            contents = [m["content"] for m in detail["messages"]]
+            expected_contents = [
+                "First question from anon",
+                "First answer to anon",
+                "Follow-up from anon",
+                "Follow-up answer",
+            ]
+            assert contents == expected_contents, (
+                f"Content mismatch: {contents} != {expected_contents}"
+            )
+
+            # Check sources
+            assert detail["messages"][1]["sources"] == [{"text": "doc A", "page": 1}], (
+                f"Sources mismatch for message 1: {detail['messages'][1]['sources']}"
+            )
+            assert detail["messages"][3]["sources"] == [{"text": "doc B", "page": 2}], (
+                f"Sources mismatch for message 3: {detail['messages'][3]['sources']}"
+            )
+    finally:
+        await _cleanup(pool, email)
+        await pool.close()
+
+
+async def test_sync_threads_requires_login():
+    """POST /threads/sync must require authentication (return 401 if not logged in)."""
+    pool = await _pool()
+    auth_store = AuthStore(pool)
+    thread_store = ThreadStore(pool)
+
+    try:
+        await auth_store.ensure_schema()
+        await thread_store.ensure_schema()
+
+        async with _async_client(_app_with_auth(auth_store, thread_store)) as client:
+            # Try to sync without logging in
+            sync_payload = [
+                {
+                    "id": 5001,
+                    "title": "Should fail",
+                    "messages": [{"role": "user", "content": "test", "sources": None}],
+                }
+            ]
+            sync_resp = await client.post("/threads/sync", json=sync_payload)
+            assert sync_resp.status_code == 401, (
+                f"sync without login should return 401, got {sync_resp.status_code}"
+            )
+    finally:
+        await pool.close()
