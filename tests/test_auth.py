@@ -18,7 +18,7 @@ import asyncpg
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from app.auth import AuthError, AuthStore, make_get_current_user_optional, verify_session_cookie
+from app.auth import AuthError, AuthStore, hash_password, make_get_current_user_optional, verify_session_cookie
 from app.config import ConfigError, load_config
 from app.embed import OllamaClient
 from app.main import create_app
@@ -568,6 +568,28 @@ async def test_google_oauth_callback_with_valid_state_and_verified_email():
             me_resp = await client.get("/me")
             assert me_resp.status_code == 200
             assert me_resp.json()["user"]["email"] == email
+
+            # "Same name/attrs as POST /login": give this same user a password identity (setup only),
+            # POST /login through the same client stack, and require every part of the Set-Cookie
+            # header except the signed value to match byte for byte (HttpOnly, Max-Age, Path,
+            # SameSite, Secure if present). The signed value is excluded: its timestamp may differ.
+            await pool.execute(
+                "INSERT INTO auth_identities (user_id, provider, provider_uid, password_hash) VALUES ($1, 'password', $2, $3)",
+                me_resp.json()["user"]["id"],
+                email,
+                hash_password("test-10-password"),
+            )
+            login_resp = await client.post("/login", json={"email": email, "password": "test-10-password"})
+            assert login_resp.status_code == 200, f"POST /login failed: {login_resp.status_code} {login_resp.text}"
+            login_cookies = _auth_session_set_cookies(login_resp)
+            assert len(login_cookies) == 1, f"Expected exactly 1 `session` Set-Cookie on /login: {login_resp.headers.get_list('set-cookie')}"
+
+            def _attrs_after_value(header: str) -> str:
+                return header.partition(";")[2]
+
+            assert _attrs_after_value(session_cookies[0]) == _attrs_after_value(login_cookies[0]), (
+                f"callback cookie attrs differ from POST /login: callback={session_cookies[0]!r} login={login_cookies[0]!r}"
+            )
     finally:
         await _cleanup(pool, email)
 

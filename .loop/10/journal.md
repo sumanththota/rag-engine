@@ -230,3 +230,55 @@ Bounds enforced by the orchestrator at the gate, mechanically: the round-4 diff 
 Model: implementer stays on sonnet (model_routing recorded at 80a4e21); the fix is one assertion plus mutation proofs and does not warrant a higher tier.
 
 Verify rounds used: 3 of 3 (+1 human-approved extension).
+
+## Implementer (sonnet) — bounded round 4 — started ~2026-09-19T23:25Z (stamped at write-up 2026-09-19T23:36Z)
+
+Base 2421c7c (detached from origin/impl/10-google-oauth); fresh venv; baseline `pytest -q` = 126 passed before any change. Scope: ONE assertion in `test_google_oauth_callback_with_valid_state_and_verified_email` + mutation proofs. Files touched: tests/test_auth.py only (+ this entry). Nothing under app/, pyproject.toml, .env.example, LOOP.md.
+
+Change: after the existing 302 / exactly-one-`session` / mock / `/me` assertions, the test (a) inserts a password identity for the SAME user (setup only; hash_password import added to the existing `from app.auth import ...` line), (b) POSTs /login through the same `_async_client(app)`, asserts 200 and exactly one `session` Set-Cookie, (c) asserts `header.partition(";")[2]` is equal for callback and login cookies, i.e. everything after the signed value, character for character. The signed value is not compared. Existing assertions kept. Cleanup unchanged (`_cleanup` in `finally` deletes identities + user).
+
+Mutations: applied ONE AT A TIME to the callback cookie line in app/main.py (the `set_session_cookie(...)` call replaced by a hand-rolled `response.set_cookie("session", sign_session_cookie(...), ...)` with the same value), tree reverted after each (script: scratchpad/mutate10r4.py; `git status` after = only tests/test_auth.py modified; never committed). Each run printed the mutated line read from the app/main.py the process imports (`IMPORTED: <worktree>/app/main.py`, `MUTATED LINE: [... # MUTANT]`). Raw tails, google tests (`-k google`):
+
+```
+L2 (no HttpOnly, SameSite=strict, Max-Age=600)
+E  AssertionError: callback cookie attrs differ from POST /login: callback='session=eyJ...; Max-Age=600; Path=/; SameSite=strict' login='session=eyJ...; HttpOnly; Max-Age=2592000; Path=/; SameSite=lax'
+FAILED tests/test_auth.py::test_google_oauth_callback_with_valid_state_and_verified_email
+1 failed, 10 passed, 21 deselected, 1 warning in 1.05s
+
+M1 (drop only HttpOnly)
+E  AssertionError: callback cookie attrs differ ...: callback='session=eyJ...; Max-Age=2592000; Path=/; SameSite=lax' login='session=eyJ...; HttpOnly; Max-Age=2592000; Path=/; SameSite=lax'
+FAILED tests/test_auth.py::test_google_oauth_callback_with_valid_state_and_verified_email
+1 failed, 10 passed, 21 deselected, 1 warning in 1.07s
+
+M2 (only SameSite=strict)
+E  AssertionError: callback cookie attrs differ ...: callback='session=eyJ...; HttpOnly; Max-Age=2592000; Path=/; SameSite=strict' login='... SameSite=lax'
+FAILED tests/test_auth.py::test_google_oauth_callback_with_valid_state_and_verified_email
+1 failed, 10 passed, 21 deselected, 1 warning in 1.11s
+
+M3 (only Max-Age=600)
+E  AssertionError: callback cookie attrs differ ...: callback='session=eyJ...; HttpOnly; Max-Age=600; Path=/; SameSite=lax' login='... Max-Age=2592000 ...'
+FAILED tests/test_auth.py::test_google_oauth_callback_with_valid_state_and_verified_email
+1 failed, 10 passed, 21 deselected, 1 warning in 1.07s
+
+M4 (only Path="/auth")
+FAILED tests/test_auth.py::test_google_oauth_callback_with_valid_state_and_verified_email
+1 failed, 10 passed, 21 deselected, 1 warning in 1.05s
+  NOTE: RED, but NOT via the new assertion: Path=/auth means the cookie jar does not send the cookie to GET /me, so the pre-existing /me assertion fails first (same as verifier's L1). Not counted as proof of the new assertion.
+
+M4b (only Path="/me" - cookie still sent to /me, so only the new assertion can catch it)
+E  AssertionError: callback cookie attrs differ ...: callback='session=eyJ...; HttpOnly; Max-Age=2592000; Path=/me; SameSite=lax' login='session=eyJ...; HttpOnly; Max-Age=2592000; Path=/; SameSite=lax'
+E  assert ' HttpOnly; M... SameSite=lax' == ' HttpOnly; M... SameSite=lax'
+FAILED tests/test_auth.py::test_google_oauth_callback_with_valid_state_and_verified_email
+1 failed, 10 passed, 21 deselected, 1 warning in 1.05s
+```
+L2, M1, M2, M3, M4b all RED via the new assertion (M3: signed values differ, as expected, and that is why they are not compared).
+
+Unmutated (app/main.py verified clean, `git status` = tests/test_auth.py only):
+```
+new test alone:                         1 passed, 1 warning in 0.41s
+pytest -q tests/test_auth.py -k google: 11 passed, 21 deselected, 1 warning in 0.98s
+all 11 google tests, reversed order:    11 passed, 1 warning in 1.02s
+pytest -q (full):                       126 passed, 1 warning in 4.54s
+leftover test-10-% users in dev DB:     0
+```
+`git diff --name-only 2421c7c` -> tests/test_auth.py (before adding this journal entry). No edit outside the two allowed files. Route not changed; no route change believed necessary. Status: all criteria exercised via HTTP; every mutation red -> setting agent:gate-pending.
