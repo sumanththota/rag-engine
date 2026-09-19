@@ -24,6 +24,14 @@ state: "ready-for-agent"   # GitHub label is already set, but depends_on ["9"] i
 branches: { impl: "impl/10-google-oauth", verify: "verify/10-google-oauth" }
 ---
 ## Context (progressive disclosure — links, not inlined bodies)
+- **PRE-FLIGHT GAP (orchestrator check 2026-09-19, read before starting):** no Google OAuth config exists anywhere.
+  - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (and a redirect URI) absent from `.env.example`, `.env` (key names checked), and `app/config.py` `Settings`.
+  - `authlib` not in `pyproject.toml` (only `itsdangerous`, `httpx`, `fastapi` present). Authlib's Starlette client also needs Starlette `SessionMiddleware` for `state`; none is registered.
+  - Real credentials do not exist → tests MUST mock Google (token exchange + userinfo/id_token); do not attempt a live consent flow. Mark clearly which criteria are covered by mocks only.
+  - **PRE-AUTHORIZED (orchestrator, 2026-09-19):** add placeholder keys `GOOGLE_CLIENT_ID=` and `GOOGLE_CLIENT_SECRET=` (empty values, no real credentials) to `.env.example` WITHOUT escalating. This is the ONLY out-of-region edit pre-authorized. (Note `.env.example` may already carry an uncommitted `SECRET_KEY` line from the user — append, do not overwrite or revert it.)
+  - Everything else outside owned regions STILL ESCALATES as normal, including `app/config.py` (new Settings fields), `pyproject.toml` (`authlib` dependency) and any SessionMiddleware wiring outside your own main.py region — trigger "any edit outside app/auth.py or own main.py region". List these edits up front and escalate for a ruling (#9 precedent: pyproject dep additions, see .loop/9/journal.md). Do not silently proceed.
+  - Make the new settings optional (default `""`) so the app and existing tests still boot without Google creds; `/auth/google/login` should fail with a clear error when unset rather than crash at import.
 - Cross-reference: ADR-0003 (docs/adr/0003-optional-cookie-auth-split-identities.md) — email-merge rationale for splitting auth_identities out of users.
+- **Client-parity (orchestrator ruling 2026-09-19):** issue #10 says Google sign-in is "indistinguishable except for the entry point", so OAuth success MUST reach the client the same way password login does, i.e. the #12 post-login sync hook must fire after it. #10 owns only the SERVER half: `/auth/google/callback` sets the cookie, then 302s to `/?login=google` (a documented, tested contract). #10 does NOT edit `app/templates/index.html` and does NOT implement the hook — #12 owns that (see .loop/12/LOOP.md). Add a pytest asserting the callback redirect target so the contract is verifier-checkable.
 - Uses authlib's Starlette client for OAuth2 authorization-code flow (state/CSRF and PKCE via the library, not hand-rolled).
 - Hotspot files & owned regions: extends app/auth.py (from #9) — coordinate with #9's owned region, do not restructure it.
