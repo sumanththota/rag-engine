@@ -195,3 +195,15 @@ passed 3x consecutively. Scope stayed within owned regions.
 Verdict: two rounds in, the acceptance criteria are still not met end-to-end and are
 still tested at the wrong level. Sending back to the implementer rather than spawning
 the verifier — a verifier round would just re-find the same gaps at higher cost.
+
+## Session 3 — 2026-09-19T21:23:00Z
+
+**Round 3 Start — Focus: Client/Server Thread State Round-Trip**
+
+Starting fresh pass with explicit focus on the round-trip as a single unit of work.
+Current state: chat_start accepts/reuses thread_id correctly (backend logic fine),
+but client state does not persist it for the next turn, and there is no page-load
+hydration from GET /threads. Need to:
+1. Fix index.html to persist server thread_id into state after chat_start response
+2. Add page-load fetch("/threads") to hydrate state.threads from server
+3. Rewrite tests to exercise HTTP routes (TestClient), not ThreadStore directly
