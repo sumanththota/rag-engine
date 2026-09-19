@@ -1202,6 +1202,23 @@
       document.getElementById("ask-btn").disabled = false;
       setActivity("Ready");
       setStreamingUi(false);
+
+      // Persist server thread_id to state if this was a logged-in chat
+      if (encodedThreadId !== undefined && encodedThreadId) {
+        const serverThreadId = parseInt(decodeURIComponent(encodedThreadId), 10);
+        if (!isNaN(serverThreadId) && serverThreadId > 0) {
+          let state = loadState();
+          // Update the active thread to use the server thread_id
+          if (state.activeThreadId) {
+            const idx = state.threads.findIndex(function (t) { return t.id === state.activeThreadId; });
+            if (idx !== -1) {
+              state.threads[idx].id = serverThreadId;
+              state.activeThreadId = serverThreadId;
+              try { saveState(state); } catch (e) {}
+            }
+          }
+        }
+      }
     });
 
     source.onerror = function () {
@@ -1331,6 +1348,49 @@
     }
   });
 
+  async function hydratThreadsFromServer() {
+    // For logged-in users, fetch threads from server instead of using localStorage
+    try {
+      const meResp = await fetch("/me");
+      const meData = await meResp.json();
+      if (!meData.user) {
+        // Not logged in, use localStorage threads
+        return;
+      }
+      // User is logged in, fetch server threads
+      const threadsResp = await fetch("/threads");
+      if (!threadsResp.ok) {
+        console.warn("Failed to fetch threads from server");
+        return;
+      }
+      const serverThreads = await threadsResp.json();
+      if (!Array.isArray(serverThreads)) {
+        return;
+      }
+      // Convert server threads to client format
+      const clientThreads = serverThreads.map(function (t) {
+        return {
+          id: t.id,  // numeric server id
+          title: t.title || "Chat",
+          updatedAt: new Date(t.updated_at).getTime(),
+          messages: []  // Messages are not included in list endpoint
+        };
+      });
+      // Replace localStorage threads with server threads for logged-in user
+      let state = loadState();
+      state.threads = clientThreads;
+      if (clientThreads.length > 0) {
+        state.activeThreadId = clientThreads[0].id;
+      } else {
+        state.activeThreadId = null;
+      }
+      try { saveState(state); } catch (e) {}
+    } catch (err) {
+      console.warn("Failed to hydrate threads from server:", err);
+      // Fall back to localStorage if server hydration fails
+    }
+  }
+
   initMarked();
   syncModelLabel();
   let boot = loadState();
@@ -1339,6 +1399,11 @@
   renderThreadList();
   renderMessagesFromState();
   setStreamingUi(false);
+
+  // Hydrate threads from server for logged-in users
+  hydratThreadsFromServer().catch(function (err) {
+    console.warn("Hydration failed:", err);
+  });
 })();
   </script>
 </body>
