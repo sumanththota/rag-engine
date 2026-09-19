@@ -926,6 +926,7 @@ bound to an ephemeral port if a criterion needs a live server.</pre>
 
   <div class="callout">
     <p><b>The critical path is #9 → #11 → #12.</b> #10 is a leaf: nothing waits on it, so it is the one piece of work you can postpone without stalling anything. If you would rather not point two agents at the shared Postgres on the first lap, run it last instead of alongside #11 — the parallel pair is an option here, not a requirement.</p>
+    <p><b>Update from the #10/#12 pre-flight.</b> #18 (login UI) was split out of #12: it depends on #9 and #12, and #12 defines the <code>afterLogin()</code> it calls, so the critical path is now #9 → #11 → #12 → #18. #12's criterion 3 is carried as <code>BLOCKED-ON-18</code>. #10 and #12 ran as the parallel pair (two agents, the concurrency cap).</p>
     <p><b>The three rules that make that pair safe, if you do run it.</b> Ticket-tagged fixtures, so #10 and #11 never touch each other's rows. Per-agent owned regions in <code>main.py</code>, so the hotspot file has no overlapping writers. And neither agent boots the dev server — port 8080 is shared, so verification goes through pytest only. Concurrency stays capped at two until there is real per-agent database isolation.</p>
   </div>
 </section>
@@ -1094,8 +1095,44 @@ Then STOP and show me: the tree you created, and the rubric scores.</pre>
     <div class="dcard" style="border-left-color:var(--blocked)">
       <h4>Found on the second live feature</h4>
       <div class="pick">A retro learning written in prose still recurred</div>
-      <p>#9's retro flagged test-ordering fragility from shared, unscoped cleanup. It was checked off and promoted into <code>CONVENTIONS.md</code> — as a sentence. The identical bug shipped again in #11's suite: tests 3–6 depend on test 2's <code>finally</code> block for cleanup, and fail if run alone, filtered, or reordered. Writing a learning down made it archival, not enforced.</p>
+      <p>Test-ordering fragility from shared, unscoped cleanup is the kind of learning that lives as a sentence. It shipped in #11's suite: tests 3–6 depend on test 2's <code>finally</code> block for cleanup, and fail if run alone, filtered, or reordered. (An earlier draft of this page said #9's retro had flagged and promoted it; the #9 retro doesn't record that — its fixture learning was about <code>SECRET_KEY</code> — so the pattern was first captured at #11.) Writing a learning down as prose made it archival, not enforced.</p>
       <div class="flip">Every promoted learning gets a <b>CHECK line</b> the orchestrator can run — a grep, not a sentence. If a learning can't be phrased as something checkable, it belongs at the template or gate level instead, not as prose to remember.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--blocked)">
+      <h4>Found in the #10 / #12 pre-flight</h4>
+      <div class="pick">A commit message can close a ticket</div>
+      <p>The scaffold PR's commit said <code>resolve #10/#12 pre-flight</code>. <code>resolve</code> is a GitHub closing keyword, so merging it closed #10 as COMPLETED one second later — before any code existed. #10 had to be reopened by hand.</p>
+      <div class="flip">No <code>close/fix/resolve #N</code> in scaffold or docs commits or PR bodies; use <code>Refs #N</code>. <b>CHECK</b> before merging a non-ticket PR: <code>git log origin/master..HEAD --format=%B | grep -iE '(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+'</code> must print nothing.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--blocked)">
+      <h4>Found in the #10 / #12 pre-flight</h4>
+      <div class="pick">A mock can hide the exact bug the criterion is about</div>
+      <p>Prototyping authlib in a scratch venv showed #9's auth cookie is named <code>session</code> and Starlette's <code>SessionMiddleware</code> also defaults to <code>session</code>. In the real callback the middleware emits <code>session=null</code> <i>after</i> the auth cookie and wipes the login. A test that mocks <code>authorize_access_token</code> never pops the state, so it never sees that header — and it also skips the real state check.</p>
+      <div class="flip">Mock at the network layer (<code>fetch_access_token</code>, <code>parse_id_token</code>), never at the step that validates. Assert <b>exactly one</b> <code>session</code> Set-Cookie on the response. Prototype the third-party integration before writing its acceptance criteria.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--blocked)">
+      <h4>Found in the #10 / #12 pre-flight</h4>
+      <div class="pick">Nothing in a one-IIFE client script is reachable from the console</div>
+      <p>index.html's whole script is one <code>(function () { … })();</code>, so <code>afterLogin()</code> and <code>hydratThreadsFromServer()</code> are <code>undefined</code> at window scope. The planned browser check — “call <code>afterLogin()</code> in the console” — was impossible as written. Found by starting the app and trying it, not by reading the plan.</p>
+      <div class="flip">Give the check a deliberate seam (<code>window.afterLogin = afterLogin;</code>, one line, inside the owned region) instead of discovering it at gate time. Try each planned browser step once before writing it into a manifest.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--blocked)">
+      <h4>Found in the #10 / #12 pre-flight</h4>
+      <div class="pick">A criterion blocked by a later ticket breaks the gate rule</div>
+      <p>#12's criterion 3 (client calls sync after login) needs #18's login form. The implementer rule “gate-pending only when every criterion is met” meant #12 could never reach the gate. Left alone, the implementer either stalls or claims it met.</p>
+      <div class="flip">Mark it <code>BLOCKED-ON-&lt;id&gt;</code> in LOOP.md with explicit carve-out conditions. The verifier reports it as BLOCKED — neither pass nor fail — and the PR says <code>Refs</code>, not <code>Closes</code>. Closing the issue stays a human call.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--blocked)">
+      <h4>Found in the #10 / #12 pre-flight</h4>
+      <div class="pick">Someone has to own the browser check — and the verifier can't read the journal</div>
+      <p>The implementer runs on a cheap model with no browser, and check (d) level 3 needs real console output. The obvious place to paste it, <code>journal.md</code>, is the one file the verifier must not read.</p>
+      <div class="flip">The orchestrator produces it on a throwaway instance (<code>flp-test-instance</code>, port 8099 — never :8080) and posts it to the PR as “orchestrator browser evidence”, where the verifier can read it. The verifier still repeats levels 1 and 2 itself.</div>
+    </div>
+    <div class="dcard" style="border-left-color:var(--blocked)">
+      <h4>Found in the #10 / #12 pre-flight</h4>
+      <div class="pick">A failed step in a shell chain kept going</div>
+      <p>Building the scratch worktree venv, <code>git worktree add</code> failed (branch already checked out) but a <code>| tail</code> masked the exit code, and the chain rebuilt the <i>main</i> repo's <code>.venv</code> instead. Nothing tracked changed, but the wrong directory was modified.</p>
+      <div class="flip">Use <code>set -e</code> (or <code>--detach</code> for throwaway worktrees), and print <code>pwd</code> before any command that writes into the tree. Confirm <code>git worktree list</code> after spawning, as the loop already requires.</div>
     </div>
     <div class="dcard" style="border-left-color:var(--ink-3)">
       <h4>Scope discipline</h4>
