@@ -46,7 +46,7 @@ from app.llm import OpenAICompatibleClient
 from app.logging_utils import configure_logging, new_trace_id, trace_id_var
 from app.rag import RagError, RagService
 from app.store import PostgresStore
-from app.threads import ThreadStore, ThreadsError
+from app.threads import ThreadStore, ThreadsError, _is_valid_thread_id
 from app.traces import (
     AnnotationStatus,
     GenerateStep,
@@ -596,6 +596,8 @@ def create_app(
                 if raw_thread_id:
                     try:
                         proposed_thread_id = int(raw_thread_id)
+                        if not _is_valid_thread_id(proposed_thread_id):
+                            return PlainTextResponse("thread not found", status_code=404)
                         # Validate that the thread belongs to the logged-in user and isn't soft-deleted
                         try:
                             thread = await thread_store.get_thread(proposed_thread_id, user.id)
@@ -661,6 +663,8 @@ def create_app(
         if raw_thread_id and user is not None and thread_store is not None:
             try:
                 proposed_thread_id = int(raw_thread_id)
+                if not _is_valid_thread_id(proposed_thread_id):
+                    return PlainTextResponse("thread not found", status_code=404)
                 # Validate that the thread belongs to the logged-in user and isn't soft-deleted
                 try:
                     thread = await thread_store.get_thread(proposed_thread_id, user.id)
@@ -921,6 +925,9 @@ def create_app(
         if user is None:
             return JSONResponse({"error": "not authenticated"}, status_code=401)
 
+        if not _is_valid_thread_id(thread_id):
+            return JSONResponse({"error": "thread not found"}, status_code=404)
+
         try:
             thread = await thread_store.get_thread(thread_id, user.id)
             if thread is None:
@@ -955,6 +962,9 @@ def create_app(
         """Soft-delete a thread (sets deleted_at)."""
         if user is None:
             return JSONResponse({"error": "not authenticated"}, status_code=401)
+
+        if not _is_valid_thread_id(thread_id):
+            return JSONResponse({"error": "thread not found"}, status_code=404)
 
         try:
             deleted = await thread_store.soft_delete_thread(thread_id, user.id)

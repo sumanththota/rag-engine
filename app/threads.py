@@ -14,6 +14,21 @@ import asyncpg
 from pydantic import BaseModel
 
 _DB_ERRORS = (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError)
+_THREAD_ID_MAX = 9223372036854775807  # Postgres bigint max (2^63 - 1)
+
+
+def _is_valid_thread_id(thread_id: int) -> bool:
+    """True if thread_id fits Postgres's bigint range. Every route that accepts
+    a client-supplied thread_id must check this before querying the database
+    with it — an out-of-range value raises a DB-level error, not a graceful miss.
+
+    Args:
+        thread_id: The thread ID to validate.
+
+    Returns:
+        True if thread_id is in valid Postgres bigint range (0, _THREAD_ID_MAX],
+        False otherwise."""
+    return 0 < thread_id <= _THREAD_ID_MAX
 
 
 class ThreadsError(Exception):
