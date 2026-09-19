@@ -127,11 +127,28 @@ class ThreadStore:
         role: Literal["user", "assistant"],
         content: str,
         sources: list[dict] | None = None,
+        user_id: int | None = None,
     ) -> int:
-        """Writes a message to a thread. Returns the message_id."""
+        """Writes a message to a thread. Returns the message_id.
+        If user_id is provided, ensures the write only succeeds if the thread
+        exists, belongs to the user, and is not soft-deleted (defense-in-depth)."""
         try:
             sources_json = json.dumps(sources) if sources else None
             async with self._pool.acquire() as conn:
+                # Build the WHERE clause for validation
+                if user_id is not None:
+                    # Defense-in-depth: validate ownership and soft-delete status at SQL level
+                    where_clause = "WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL"
+                    check_result = await conn.fetchrow(
+                        f"SELECT id FROM threads {where_clause}",
+                        thread_id,
+                        user_id,
+                    )
+                    if check_result is None:
+                        raise ThreadsError(
+                            f"write_message: thread {thread_id} not found, owned by user {user_id}, or is soft-deleted"
+                        )
+
                 row = await conn.fetchrow(
                     """
                     INSERT INTO thread_messages (thread_id, role, content, sources)

@@ -592,14 +592,18 @@ def create_app(
             # Reuse existing thread if provided, or create new one for logged-in users
             thread_id = None
             if user is not None and thread_store is not None:
-                # If thread_id was provided, reuse it (must be a valid thread)
+                # If thread_id was provided, validate ownership and soft-delete status
                 if raw_thread_id:
                     try:
-                        thread_id = int(raw_thread_id)
+                        proposed_thread_id = int(raw_thread_id)
+                        # Validate that the thread belongs to the logged-in user and isn't soft-deleted
+                        thread = await thread_store.get_thread(proposed_thread_id, user.id)
+                        if thread is not None:
+                            thread_id = proposed_thread_id
                     except ValueError:
                         thread_id = None
 
-                # If no thread_id provided (or invalid), create a new one
+                # If no valid thread_id provided, create a new one
                 if thread_id is None:
                     try:
                         thread_id = await thread_store.create_thread(user.id, title=None)
@@ -648,9 +652,13 @@ def create_app(
         # Get thread_id if provided (logged-in user with persistent thread)
         raw_thread_id = request.query_params.get("thread_id", "").strip()
         thread_id = None
-        if raw_thread_id and user is not None:
+        if raw_thread_id and user is not None and thread_store is not None:
             try:
-                thread_id = int(raw_thread_id)
+                proposed_thread_id = int(raw_thread_id)
+                # Validate that the thread belongs to the logged-in user and isn't soft-deleted
+                thread = await thread_store.get_thread(proposed_thread_id, user.id)
+                if thread is not None:
+                    thread_id = proposed_thread_id
             except ValueError:
                 thread_id = None
 
@@ -827,14 +835,15 @@ def create_app(
                 if not should_write_thread or user is None or thread_id is None or thread_store is None:
                     return
                 try:
-                    # Write user message
-                    await thread_store.write_message(thread_id, "user", question, sources=None)
-                    # Write assistant message with sources
+                    # Write user message (with ownership check at SQL level)
+                    await thread_store.write_message(thread_id, "user", question, sources=None, user_id=user.id)
+                    # Write assistant message with sources (with ownership check at SQL level)
                     await thread_store.write_message(
                         thread_id,
                         "assistant",
                         thread_generated_output,
                         sources=thread_sources,
+                        user_id=user.id,
                     )
                 except ThreadsError as err:
                     logger.warning(
