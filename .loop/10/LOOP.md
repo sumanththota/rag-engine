@@ -30,7 +30,11 @@ escalation_triggers:
   - "any edit outside the owned regions listed under Context (app/auth.py, tests/test_auth.py, main.py `# region: google-oauth`, the signup handler's AuthError mapping, and the pre-authorized config.py / pyproject.toml / .env.example edits)"
   - "a criterion names verify_via: HTTP or UI and the diff's tests never import a test client or call a route/element for it"   # mechanical: loop.md check (c)
 budgets: { max_iterations: 8, max_verify_rounds: 3, max_tokens: 400000, wall_clock: "2h" }
-model_routing: { implementer: "haiku", verifier: "opus", planner: "opus" }
+model_routing: { implementer: "sonnet", verifier: "opus", planner: "opus" }
+# implementer overridden haiku -> sonnet for the round-3 FIX PASS, after verify round 2: rejection rate 2/2 = 100%,
+# above the ~40% threshold (loop.md MODEL-TIER OVERRIDE). THIS TICKET, THIS FIX ROUND ONLY.
+# Not a comment on default routing: implementer.md's default stays haiku for every other and future ticket.
+# verifier/planner unchanged: opus, as set in verifier.md's frontmatter (the tier that actually ran all three verify rounds).
 state: "ready-for-agent"   # GitHub label set; depends_on ["9"] is merged.
 branches: { impl: "impl/10-google-oauth", verify: "verify/10-google-oauth" }
 ---
