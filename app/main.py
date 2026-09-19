@@ -597,9 +597,15 @@ def create_app(
                     try:
                         proposed_thread_id = int(raw_thread_id)
                         # Validate that the thread belongs to the logged-in user and isn't soft-deleted
-                        thread = await thread_store.get_thread(proposed_thread_id, user.id)
-                        if thread is not None:
-                            thread_id = proposed_thread_id
+                        try:
+                            thread = await thread_store.get_thread(proposed_thread_id, user.id)
+                            if thread is not None:
+                                thread_id = proposed_thread_id
+                        except ThreadsError as err:
+                            logger.warning(
+                                "thread get failed err=%s", err, extra={"stage": "http"},
+                            )
+                            return PlainTextResponse("thread not found", status_code=404)
                     except ValueError:
                         thread_id = None
 
@@ -656,9 +662,15 @@ def create_app(
             try:
                 proposed_thread_id = int(raw_thread_id)
                 # Validate that the thread belongs to the logged-in user and isn't soft-deleted
-                thread = await thread_store.get_thread(proposed_thread_id, user.id)
-                if thread is not None:
-                    thread_id = proposed_thread_id
+                try:
+                    thread = await thread_store.get_thread(proposed_thread_id, user.id)
+                    if thread is not None:
+                        thread_id = proposed_thread_id
+                except ThreadsError as err:
+                    logger.warning(
+                        "thread get failed err=%s", err, extra={"stage": "http"},
+                    )
+                    return PlainTextResponse("thread not found", status_code=404)
             except ValueError:
                 thread_id = None
 

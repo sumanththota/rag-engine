@@ -606,3 +606,62 @@ instructed to make only `test_oversized_thread_id_returns_404_not_500` pass and 
 nothing else — per instruction, not touching the three non-blocking notes
 (`write_message(user_id=None)` skipping the guard, its check-then-insert atomicity,
 criterion 4's list-route-only coverage) since those weren't in the two required fixes.
+
+## Session 6 — 2026-09-19T23:00:00Z (Pass 6 — Oversized Thread ID Fix)
+
+**Start time:** 2026-09-19T23:00:00Z
+
+**Objective:** Fix oversized thread_id bug (Finding B from round-5 verifier):
+- Numeric-but-out-of-range thread_id (e.g., "99999999999999999999", exceeds Postgres bigint)
+- Parses fine in Python (arbitrary precision), but raises ThreadsError in Postgres
+- Was NOT caught by existing `except ValueError` block
+- Resulted in unhandled 500 instead of proper 404
+
+**Root cause:** `chat_start` and `chat_stream` wrapped `int(raw_thread_id)` in `try/except ValueError`, but the subsequent `thread_store.get_thread()` call (inside the try block) could raise `ThreadsError` for out-of-range values — not caught by ValueError handler.
+
+**Fix deployed:**
+
+1. **chat_start (lines 592-610 → 592-618):**
+   - Wrapped `thread_store.get_thread()` call in its own `try/except ThreadsError` block
+   - On ThreadsError: log warning and return 404 immediately
+   - Preserved existing `except ValueError` behavior (non-numeric ids fall through to create new thread)
+
+2. **chat_stream (lines 652-663 → 652-671):**
+   - Applied identical wrapping around `thread_store.get_thread()` call
+   - On ThreadsError: log warning and return 404 immediately
+   - Preserved existing `except ValueError` behavior
+
+**Test results:**
+
+Target test (initially failing with 500):
+```
+PYTHONPATH=. pytest -q tests/test_threads.py -k test_oversized_thread_id_returns_404_not_500
+.                                                                        [100%]
+1 passed in 0.35s
+```
+
+Full suite (3 consecutive runs):
+```
+Run 1: ........................................................................ [ 63%]
+       ..........................................                               [100%]
+       114 passed in 3.70s
+
+Run 2: ........................................................................ [ 63%]
+       ..........................................                               [100%]
+       114 passed in 3.74s
+
+Run 3: ........................................................................ [ 63%]
+       ..........................................                               [100%]
+       114 passed in 3.83s
+```
+
+**Verification:**
+- ✓ Target test `test_oversized_thread_id_returns_404_not_500` PASSES (was RED with 500)
+- ✓ Test passes alone (run with -k)
+- ✓ Full suite: 114 passed, 0 failed (up from 113 passed / 1 failed before fix)
+- ✓ No regressions to existing tests
+
+**Scope check:** Only modified:
+- `app/main.py` — added ThreadsError catch blocks in chat_start and chat_stream
+
+**Commit:** impl/11-persist-threads
