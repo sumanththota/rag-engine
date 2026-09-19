@@ -117,3 +117,18 @@ Searched in app/templates/index.html:
 3. Journal states "BLOCKED-ON-18, not met" for criterion 3: ✓ YES (see this entry)
 
 **Recommendation:** Ready for gate-pending label. Criterion 3 unmet (BLOCKED-ON-18). PR #20 must NOT close issue #12 (split per LOOP.md: #18 owns login form and criterion 3).
+
+## Orchestrator — 2026-09-19T22:10:32Z — check (a) escalation: APPROVED (item 1 of 2: manifest gap)
+
+Check (a) flagged one out-of-region edit: `app/main.py:49`, the existing `from app.threads import ...` line, extended with `ClientThread`. It sits outside the `# region: threads-sync` markers. Ticket was labeled agent:blocked.
+
+**Human-approved — manifest gap, not implementer overreach: a route using ClientThread structurally requires importing it. Owned-region lists should include the import line whenever a new type/class from outside the region is used in code inside it.**
+
+RETRO-CANDIDATE (for #12's retro, and a candidate promotion to CONVENTIONS/the manifest template, not just this ticket). Proposed CHECK: for every ticket whose region-owned code uses a new type from outside the region, the LOOP.md owned-region list names the import line, verifiable by diffing `git diff -U0 master...impl/<id> -- <file>` for hunks outside the region markers and confirming each is listed. LOOP.md amended in this same commit (owned-regions list + escalation trigger text) to name that line.
+
+## Orchestrator — 2026-09-19T22:10:32Z — SELF-REPORT GAP (item 2 of 2, distinct from item 1)
+
+The implementer's journal ("No edits outside owned regions") and final report ("Escalations: None") both said no escalation had occurred. One had: the import edit above. It was caught only because the orchestrator diffed hunk line numbers against the region markers, not because the implementer flagged it.
+
+This is a self-report gap and is recorded separately from the manifest gap: the manifest gap explains why the edit was necessary; it does not explain why the implementer reported "none" instead of flagging it. implementer.md step 1 says an out-of-region edit is an escalation to STOP and FLAG, "not a judgment call". The implementer made that judgment call silently. It was harmless here; the failure is in the reporting, and the same silence on a non-harmless edit would have gone through. Second live occurrence of this class after #9 (pyproject two-line edit rationalized past). RETRO-CANDIDATE: escalations must be mechanically detectable from the diff, never dependent on the implementer's own report — i.e. check (a) must stay an orchestrator-run hunk-level diff against region markers, not a review of the journal.
+

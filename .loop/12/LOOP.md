@@ -24,7 +24,7 @@ verifier_command: "pytest -q tests/test_threads.py -k sync"
 escalation_triggers:
   - "schema/migration touches an existing table"
   - "the SAME criterion fails in 3 separate verify rounds"
-  - "any edit outside the owned regions listed under Context (app/threads.py, tests/test_threads.py, main.py `# region: threads-sync`, index.html afterLogin()/?login=google only)"   # RE-AUTHORIZED (orchestrator 2026-09-19), no escalation: edits to app/templates/index.html SCOPED TO afterLogin() and the ?login=google boot-time detection ONLY. Any other index.html change — UI, styling, unrelated JS — still escalates.
+  - "any edit outside the owned regions listed under Context (app/threads.py, tests/test_threads.py, main.py `# region: threads-sync`, the single `from app.threads import` line in main.py, index.html afterLogin()/?login=google only)"   # RE-AUTHORIZED (orchestrator 2026-09-19), no escalation: edits to app/templates/index.html SCOPED TO afterLogin() and the ?login=google boot-time detection ONLY. Any other index.html change — UI, styling, unrelated JS — still escalates.
   - "a criterion names verify_via: HTTP or UI and the diff's tests never import a test client or call a route/element for it"   # mechanical: loop.md check (c)
 budgets: { max_iterations: 8, max_verify_rounds: 3, max_tokens: 400000, wall_clock: "2h" }
 model_routing: { implementer: "haiku", verifier: "opus", planner: "opus" }
@@ -50,4 +50,5 @@ branches: { impl: "impl/12-sync-threads-login", verify: "verify/12-sync-threads-
   - `app/main.py` between `# region: threads-sync (#12)` and `# endregion: threads-sync` (between the DELETE /threads/{thread_id} route and the traces section). Markers exist on master; put `POST /threads/sync` there.
   - `app/templates/index.html`: `afterLogin()` (including the one-line `window.afterLogin = afterLogin;` seam) and the `?login=google` boot-time detection ONLY (client post-login code is in index.html; no other file).
   - `.loop/12/journal.md`.
+  - `app/main.py` line 49 ONLY: the existing `from app.threads import ...` line, to add `ClientThread` (or another type the threads-sync route uses). APPROVED 2026-09-19 after the fact by a human — manifest gap, see journal; no other import or top-level edit in main.py.
   - NOT owned, still escalates: any other index.html change, `app/config.py`, `pyproject.toml`, anything else.
