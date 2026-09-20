@@ -2,3 +2,4 @@
 |----|-------|---------|-------|---------------|--------|--------------|------|
 | 9 | password auth | merged | unreliable (see retro) | 2 | not captured | full-suite + 3x repeat run caught a regression and a ~25%-flaky test the implementer's own green suite missed | .loop/9/retro.md |
 | 11 | persist threads | merged | 7 implementer passes (16 journal entries) | 6 | not captured | store-vs-HTTP test gap and a JS/backend split hid unmet criteria behind a green suite; a shared bounds-check function replaced two rounds of per-route patches | .loop/11/retro.md |
+| 10 | google oauth | merged | 4 implementer passes (10 journal entries) | 3 | ~680k subagent tokens (harness-reported; orchestrator excluded) | mocks at the wrong seam hid a different real defect each round; two rounds traced to guidance errors in the manifest itself (parse_id_token, missing openid scope); a per-clause mutation kill-list belongs in the manifest up front | .loop/10/retro.md |
