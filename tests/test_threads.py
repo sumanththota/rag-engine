@@ -1130,9 +1130,9 @@ async def test_sync_threads_idempotent_second_call():
 
 
 def test_after_login_defined_in_index_html():
-    """Criterion 3 (BLOCKED-ON-18, carve-out): Grep evidence that window.afterLogin
-    is defined in index.html and calls fetch('/threads/sync', ...) BEFORE calling
-    hydratThreadsFromServer(). Does NOT test login form (that's #18's job)."""
+    """Criterion 3 (BLOCKED-ON-18, carve-out): Static evidence that window.afterLogin
+    is defined in index.html in the owned region. Does NOT test login form (that's #18's job)
+    and does NOT test ordering (see test_after_login_real_execution_order for that)."""
     # Read index.html and search for region markers and the function definition
     with open("app/templates/index.html", "r", encoding="utf-8") as f:
         html = f.read()
@@ -1173,22 +1173,125 @@ def test_after_login_defined_in_index_html():
         "hydratThreadsFromServer not called in afterLogin"
     )
 
-    # Verify sync comes BEFORE hydrate (sync-then-hydrate order).
-    # Strip line comments (// ...) from the region first, so the check operates on
-    # real code, not comment text. The function's own leading comment may contain
-    # the literal substring "/threads/sync", which would satisfy the ordering
-    # assertion regardless of what the actual code does.
-    def _strip_line_comments(js: str) -> str:
-        return "\n".join(line.split("//", 1)[0] for line in js.split("\n"))
 
-    code_only = _strip_line_comments(region)
-    sync_idx = code_only.find("/threads/sync")
-    hydrate_idx = code_only.find("hydratThreadsFromServer()")
-    assert sync_idx != -1, "no real (non-comment) reference to /threads/sync in the region"
-    assert hydrate_idx != -1, "no real (non-comment) call to hydratThreadsFromServer() in the region"
+def test_after_login_real_execution_order():
+    """Criterion 3 / ordering guarantee: window.afterLogin ACTUALLY executes
+    fetch('/threads/sync', ...) BEFORE calling hydratThreadsFromServer(), not
+    just in text order. Extracts the region from index.html, wraps it with mocked
+    localStorage/fetch/hydratThreadsFromServer, and executes via node to observe
+    real call order."""
+    import subprocess
+    import json
+
+    # Read the afterLogin region from index.html
+    with open("app/templates/index.html", "r", encoding="utf-8") as f:
+        html = f.read()
+
+    start_marker = "// region: after-login (#12)"
+    end_marker = "// endregion: after-login"
+    start_idx = html.find(start_marker)
+    end_idx = html.find(end_marker)
+    assert start_idx >= 0 and end_idx > start_idx, (
+        "Could not extract afterLogin region from index.html"
+    )
+    # Extract region without markers
+    region_with_markers = html[start_idx:end_idx + len(end_marker)]
+    # Remove the markers themselves to get just the code
+    region_lines = region_with_markers.split("\n")[1:-1]  # Skip marker lines
+    afterlogin_code = "\n".join(region_lines)
+
+    # JavaScript that wraps afterLogin with mocks and tracks call order
+    node_script = f"""
+// Track call order
+const callOrder = [];
+
+// Mock localStorage with one thread to trigger the fetch call
+const localStorage = {{}};
+const loadState = () => {{
+  return {{
+    threads: [
+      {{
+        id: 'test-thread-1',
+        title: 'Test Thread',
+        messages: [
+          {{ role: 'user', content: 'Hello' }}
+        ]
+      }}
+    ]
+  }};
+}};
+
+// Mock fetch
+const fetch = async function(url, options) {{
+  callOrder.push('fetch:' + url);
+  // Respond OK but don't read body (we don't care about the response)
+  return {{ ok: true, status: 200 }};
+}};
+
+// Mock hydratThreadsFromServer
+const hydratThreadsFromServer = async function() {{
+  callOrder.push('hydrate');
+}};
+
+// Create a window object and set afterLogin on it
+const window = {{}};
+
+// Define afterLogin (from index.html)
+{afterlogin_code}
+
+// Execute afterLogin and capture the result
+(async () => {{
+  try {{
+    await window.afterLogin();
+  }} catch (e) {{
+    // If afterLogin throws, capture the error but continue
+    console.error("afterLogin threw:", e.message);
+  }}
+  // Output call order as JSON so Python can parse it
+  console.log(JSON.stringify(callOrder));
+}})();
+"""
+
+    # Execute via node
+    result = subprocess.run(
+        ["node", "-e", node_script],
+        capture_output=True,
+        text=True,
+        timeout=5
+    )
+
+    assert result.returncode == 0, (
+        f"node execution failed with code {result.returncode}: "
+        f"stdout={result.stdout!r}, stderr={result.stderr!r}"
+    )
+
+    # Parse the call order from the last line of stdout
+    output_lines = result.stdout.strip().split("\n")
+    call_order_json = output_lines[-1]
+    try:
+        call_order = json.loads(call_order_json)
+    except json.JSONDecodeError:
+        raise AssertionError(
+            f"Could not parse call order JSON from node output: {call_order_json!r}\n"
+            f"Full output: {result.stdout!r}"
+        )
+
+    # Verify order: fetch('/threads/sync') must come BEFORE hydrate
+    sync_calls = [c for c in call_order if "fetch" in c and "/threads/sync" in c]
+    hydrate_calls = [c for c in call_order if "hydrate" in c]
+
+    assert len(sync_calls) > 0, (
+        f"fetch('/threads/sync') was never called. Call order: {call_order}"
+    )
+    assert len(hydrate_calls) > 0, (
+        f"hydratThreadsFromServer() was never called. Call order: {call_order}"
+    )
+
+    sync_idx = call_order.index(sync_calls[0])
+    hydrate_idx = call_order.index(hydrate_calls[0])
     assert sync_idx < hydrate_idx, (
-        "hydratThreadsFromServer called BEFORE /threads/sync in actual code (ignoring comments); "
-        f"sync at {sync_idx}, hydrate at {hydrate_idx}"
+        f"WRONG ORDER: hydrate called at position {hydrate_idx} but sync at {sync_idx}. "
+        f"Call order: {call_order}"
     )
 
 
@@ -1287,28 +1390,107 @@ async def test_sync_threads_preserves_order_and_content():
         await _cleanup(pool, email)
 
 
-def test_get_thread_orders_messages_with_id_tiebreaker():
+async def test_get_thread_orders_messages_with_id_tiebreaker():
     """Criterion 4 / HAZARD 2: Postgres does not guarantee any particular order for
     rows with identical created_at values without an explicit secondary sort key.
-    A same-transaction batch insert (e.g. from sync_threads) gives every message an
-    identical created_at (Postgres now() is fixed per transaction), so without this
-    tiebreaker, message order becomes Postgres's undefined tie-break behavior, not
-    the submitted order. A behavioral HTTP test cannot reliably distinguish this from
-    a correct-by-coincidence result on a small, uncontended table (verified live:
-    the behavioral test alone stayed green 3/3 runs with this tiebreaker removed) —
-    assert directly on the query text instead."""
-    import inspect
-    from app.threads import ThreadStore
-    source = inspect.getsource(ThreadStore.get_thread)
-    # Strip comments before searching — a comment naming the tiebreaker must not
-    # satisfy this check regardless of what the executed query actually says
-    # (round-2 verifier finding: this exact defect, previously fixed for the JS
-    # version of this same check in test_after_login_defined_in_index_html).
-    code_only = "\n".join(line.split("#", 1)[0] for line in source.split("\n"))
-    assert "ORDER BY created_at ASC, id ASC" in code_only, (
-        "get_thread's EXECUTED message query must break created_at ties with id ASC "
-        "as a secondary sort key — see HAZARD 2 in .loop/12/LOOP.md"
-    )
+    Forces a real MVCC scenario: give two messages the same created_at (simulating
+    a same-transaction batch insert), then UPDATE one after the other exists.
+    Without the id ASC tiebreaker, physical heap-scan order becomes undefined;
+    with it, order is guaranteed by id (insertion order).
+
+    This test creates the EXACT scenario that would break without the tiebreaker:
+    two messages with identical created_at, where an UPDATE happened after both rows
+    existed (Postgres MVCC/HOT behavior can reorder them in the heap)."""
+    pool = await _pool()
+    auth_store = AuthStore(pool)
+    thread_store = ThreadStore(pool)
+    email = "test-12-mvcc-order@example.com"
+
+    try:
+        await auth_store.ensure_schema()
+        await thread_store.ensure_schema()
+        await _cleanup(pool, email)
+
+        # Signup and login
+        app = _app_with_auth(auth_store, thread_store)
+        async with _async_client(app) as client:
+            signup = await client.post(
+                "/signup", json={"email": email, "password": "test123"}
+            )
+            assert signup.status_code == 201
+            user_id = signup.json()["id"]
+            await client.post("/login", json={"email": email, "password": "test123"})
+
+            # Create a thread
+            thread_id = await thread_store.create_thread(user_id, "MVCC Test")
+            assert thread_id is not None and thread_id > 0
+
+            # Manually insert two messages with IDENTICAL created_at (via raw SQL)
+            # This simulates the same-transaction batch insert scenario from sync_threads
+            async with pool.acquire() as conn:
+                # Get a fixed timestamp that we'll use for both messages
+                timestamp = await conn.fetchval("SELECT now()")
+
+                # Insert first message (will get lower id)
+                msg1_id = await conn.fetchval(
+                    """
+                    INSERT INTO thread_messages (thread_id, role, content, sources, created_at)
+                    VALUES ($1, $2, $3, $4, $5)
+                    RETURNING id
+                    """,
+                    thread_id,
+                    "user",
+                    "Message 1",
+                    None,
+                    timestamp,
+                )
+
+                # Insert second message (will get higher id, same created_at)
+                msg2_id = await conn.fetchval(
+                    """
+                    INSERT INTO thread_messages (thread_id, role, content, sources, created_at)
+                    VALUES ($1, $2, $3, $4, $5)
+                    RETURNING id
+                    """,
+                    thread_id,
+                    "assistant",
+                    "Message 2",
+                    None,
+                    timestamp,
+                )
+
+                # Verify the ids are in insertion order
+                assert msg1_id < msg2_id, f"msg1_id={msg1_id} should be < msg2_id={msg2_id}"
+
+                # Update the first message (triggers MVCC/HOT behavior in Postgres)
+                # This can cause physical reordering in the heap without the id tiebreaker
+                await conn.execute(
+                    """
+                    UPDATE thread_messages SET content = $1 WHERE id = $2
+                    """,
+                    "Message 1 Updated",
+                    msg1_id,
+                )
+
+            # Now fetch the thread and verify order is still correct
+            # WITHOUT the id ASC tiebreaker, the order could be [msg2, msg1]
+            # WITH the tiebreaker, order is guaranteed to be [msg1, msg2] (id ascending)
+            detail = await thread_store.get_thread(thread_id, user_id)
+            assert detail is not None
+            assert len(detail.messages) == 2, f"Expected 2 messages, got {len(detail.messages)}"
+
+            # Verify the order by id: msg1 (lower id) must come before msg2 (higher id)
+            assert detail.messages[0].id == msg1_id, (
+                f"First message must be msg1 (id={msg1_id}) due to id ASC tiebreaker, "
+                f"but got id={detail.messages[0].id}"
+            )
+            assert detail.messages[1].id == msg2_id, (
+                f"Second message must be msg2 (id={msg2_id}), but got id={detail.messages[1].id}"
+            )
+            assert detail.messages[0].content == "Message 1 Updated"
+            assert detail.messages[1].content == "Message 2"
+    finally:
+        await _cleanup(pool, email)
 
 
 # ---- Criterion 5: Ownership/access control (attacker perspective) ----
