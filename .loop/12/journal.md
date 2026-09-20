@@ -347,3 +347,33 @@ form submit" proof still waits on #18, per the carve-out.
 
 **Verdict: all four checks pass. Proceeding to spawn the verifier.**
 - [x] No escalation triggers
+
+## Verifier round 1 — 2026-09-20T06:05:00Z — NEEDS_WORK
+
+Full raw verdict posted by the verifier itself to PR #26 (not relayed here — read it there).
+Summary of the two real findings, both test-hardening (production code confirmed correct
+under every probe the verifier ran):
+
+- **Criterion 4, second occurrence of the same defect class:** round 2's fix
+  (`inspect.getsource(...)` + substring check) is ITSELF comment-satisfiable — the verifier
+  added a `# ORDER BY created_at ASC, id ASC` comment line above the real (mutated,
+  tiebreaker-less) query and the check still passed. Same class of hollow-assertion as
+  round 1's JS substring check, now recurring in a second language/file. This is the
+  SECOND distinct round this criterion's guard has been found inadequate (round 1:
+  orchestrator pre-check; round 2: verifier) — not yet the 3-round escalation trigger, but
+  tracked as a pattern, not a one-off.
+- **Criterion 5, new finding:** the ownership test never actually sends a client-supplied
+  user-identifying field, so a mutation that reads one from the body instead of the session
+  survives (verifier confirmed: mutant lets user A overwrite user B's thread; real code
+  keeps them separate). The existing collision-on-`client_thread_id` test proves scoping
+  works for two REAL sessions, but doesn't prove the route ignores a spoofed identity field
+  if one were sent.
+- Also flagged: `verifier_command: "pytest -q tests/test_threads.py -k sync"` doesn't match
+  either fragile test's name (`test_after_login_defined_in_index_html`,
+  `test_get_thread_orders_messages_with_id_tiebreaker`) — both of this ticket's most fragile
+  criteria never ran under the narrow verifier command, only under the full suite. Fixed by
+  the orchestrator (previous commit): dropped the `-k sync` filter, runs the whole file.
+
+Journal entries so far: implementer round 1, orchestrator block, implementer round 2 (fix),
+orchestrator re-check + browser evidence, verifier round 1. 5 of max_iterations 8 — round 3
+below stays narrowly scoped to avoid burning the budget on repeat cycles of the same lesson.
