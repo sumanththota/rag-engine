@@ -82,3 +82,74 @@ Implemented full thread sync feature per LOOP.md spec. All 6 acceptance criteria
 All 131 tests passing (126 baseline + 5 new sync criteria).
 Rebased onto origin/impl/12-thread-sync scaffold, pushed successfully.
 Ready for verifier validation.
+
+## Orchestrator — gate-pending pre-checks — 2026-09-20T05:35:00Z — STOP, agent:blocked
+
+Ran loop.md's four pre-verifier checks (a-d) before spawning a verifier. Independently
+confirmed origin sha (afc5d5d == local == origin), diff region-scoped (a single necessary
+import-line expansion in main.py's `from app.threads import ...`, adding the two new
+model names — accepted per the standing #10/#12 manifest-gap ruling: a route using a new
+type structurally requires importing it, not implementer overreach), and re-ran the full
+suite myself (131/131 green, confirmed independently, not taken on the implementer's word).
+
+**Check (a) mutation-count sub-rule: FAILS.** LOOP.md names 5 mutation_targets (criteria
+1-5). The implementer's journal shows ZERO actual run-and-observed mutations — only prose
+predictions ("test fails if X is reverted"), no scratch copy, no pasted red/green output.
+Per loop.md: "count what the report actually shows against what LOOP.md requires. Fewer
+than required is an automatic block, same severity as an out-of-region edit."
+
+Because the report showed no evidence, I ran all 5 named mutations myself in the
+implementer's own worktree/venv (each applied, tested, reverted; suite confirmed 131/131
+green again afterward — no residual changes):
+
+- **Criterion 1 (ON CONFLICT clause removed) → KILLED.** Second sync 500s on a Postgres
+  unique-constraint violation. Real protection.
+- **Criterion 2 (partial unique index dropped) → KILLED.** First sync 500s: "no unique or
+  exclusion constraint matching the ON CONFLICT specification." Real protection.
+- **Criterion 4 (`id ASC` tiebreaker removed from `get_thread`'s ORDER BY) → SURVIVED, 3/3
+  runs.** `test_sync_threads_preserves_order_and_content` stays green with the tiebreaker
+  gone. Postgres returns the tied-`created_at` rows in insertion order anyway for this
+  small, uncontended table (sequential scan, no concurrent writers) — the fix is real and
+  should stay, but the test cannot currently distinguish "correct because of the
+  tiebreaker" from "correct by incidental physical layout." Per the manual's STOP table:
+  "a mutation_target test that stays green with the mechanism removed."
+- **Criterion 3 (afterLogin sync-before-hydrate order reversed) → SURVIVED.**
+  `test_after_login_defined_in_index_html` passed even with the real call order flipped.
+  Root cause: the test does `region.find("/threads/sync")` vs
+  `region.find("hydratThreadsFromServer()")` on raw text, and the function's own leading
+  comment — `// Upload local threads via /threads/sync THEN hydrate from server.` —
+  contains the literal substring `/threads/sync` BEFORE either real statement, so the
+  assertion is satisfied by the comment regardless of what the code below it actually
+  does. This is a hollow assertion, not a weak one — it is already defeated in the
+  merged-as-is diff, not just under mutation.
+- **Criterion 5 (user_id sourcing swapped for a hardcoded value) → KILLED** (via a
+  users-FK violation rather than the ownership-collision path the test narrates, but it
+  does fail — this mutation_target is not hollow).
+
+**Verdict: 2 of 5 named mutations are unproven — one (criterion 3) is a live hollow
+assertion in the current diff, not merely undertested.** Per the FLP v3 STOP table this is
+"an assertion_depth check finding a hollow guard" / "a mutation_target test that stays
+green with the mechanism removed" — STOP-class, not NEEDS_WORK, and not something the
+orchestrator resolves by itself. Escalation trigger fired: check (a) failed on its
+mutation-count sub-rule. Labeling `agent:blocked` per loop.md ("Fail any and label
+agent:blocked... spawn VERIFIER" only after all four pass). No verifier spawned this round
+— spending verifier tokens against unproven mutation coverage would be wasted work if the
+guard turns out hollow, which two of five did.
+
+Checks (b) (verify branch sync) and (d) (orchestrator browser evidence for criterion 3)
+were not run this round — no verifier to sync a `verify/12-thread-sync` branch against
+yet, and browser evidence for an ordering claim I've just shown the pytest layer can't
+even detect would be premature before a fix round.
+
+**What a fix round needs (not prescribing the fix, just the gap):**
+1. `test_sync_threads_preserves_order_and_content` needs a way to actually force or detect
+   a same-`created_at` tie (e.g. assert on returned `id` order directly, or seed rows with
+   an explicit forced-equal timestamp) so removing the `id ASC` tiebreaker demonstrably
+   fails it.
+2. `test_after_login_defined_in_index_html`'s order check needs to search the region with
+   comments stripped, or assert on the actual statement tokens (e.g. the `fetch(` call and
+   `await hydratThreadsFromServer()` call sites), not a raw substring search that a comment
+   can satisfy.
+
+Journal entries so far: 2 (implementer iteration 1, this orchestrator check). Nowhere near
+max_iterations (8).
