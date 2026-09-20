@@ -270,6 +270,14 @@ Handoff addendum: the agent worktrees under .claude/worktrees/ are removed at ha
 
 **Commit:** 6f3aad1 "feat(#12): rework sync with client_id column and string id validation"
 
+## Orchestrator — 2026-09-20T (new session resume) — HUMAN DECISION: client_id serializer lines APPROVED; agent:blocked -> agent:in-progress
+
+Human, this session: instructed the orchestrator to confirm or decline the two main.py serializer lines flagged at the 2026-09-19T23:55:40Z gate as a manifest gap (item 1). Orchestrator confirmed against the code before approving, not assumed: `app/main.py:909` (`"client_id": t.client_id,` in the #11 `GET /threads` list handler) and `app/main.py:940` (`"client_id": thread.client_id,` in the #11 `GET /threads/{thread_id}` detail handler). Both are one-line additions to an existing JSON dict literal; neither adds a query, changes control flow, or touches anything beyond reading the already-approved nullable `client_id` column onto the response. This is not a new decision — KEYING DESIGN (LOOP.md, human-approved 2026-09-19) already states "List and detail models expose client_id (nullable)"; these two lines are that requirement's only remaining implementation, on the two pre-existing #11 routes that were never in #12's threads-sync region to begin with. Same class and same disposition as the earlier import-line manifest gap (approved 2026-09-19): owned-region list gap, not implementer overreach.
+
+**APPROVED.** LOOP.md owned regions amended (this commit) to name both lines explicitly, plus the general rule: a ticket that adds a field to a model must also name every serializer/route that emits that model in its owned-region list, not just the model definition. This is the second occurrence of that exact gap class on #12 (first: the import line) — RETRO-CANDIDATE, strengthens the existing one, promote to CONVENTIONS.md/manifest template at #12's retro.
+
+State: agent:blocked -> agent:in-progress. Resuming the SESSION HANDOFF resume plan (below) from step 2.
+
 **Criterion Status:**
 - **1 (POST /threads/sync accepts batch, upserts):** ✓ MET - HTTP test exercises full route, verifies GET endpoints
 - **2 (Idempotent by client_id):** ✓ MET - Single and concurrent POSTs both tested

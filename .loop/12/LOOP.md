@@ -32,7 +32,7 @@ escalation_triggers:
   - "a criterion names verify_via: HTTP or UI and the diff's tests never import a test client or call a route/element for it"   # mechanical: loop.md check (c)
 budgets: { max_iterations: 8, max_verify_rounds: 3, max_tokens: 400000, wall_clock: "2h" }
 model_routing: { implementer: "haiku", verifier: "opus", planner: "opus" }
-state: "ready-for-agent"   # GitHub label set; depends_on ["11"] is merged. Criterion 3 stays BLOCKED on #18 (ruling on how that interacts with gate-pending is outstanding).
+state: "agent:in-progress"   # 2026-09-20: unblocked — human approved the two client_id serializer lines; rework pass resumed. Criterion 3 stays BLOCKED on #18.
 branches: { impl: "impl/12-sync-threads-login", verify: "verify/12-sync-threads-login" }
 ---
 ## Context (progressive disclosure — links, not inlined bodies)
@@ -64,4 +64,6 @@ branches: { impl: "impl/12-sync-threads-login", verify: "verify/12-sync-threads-
   - `app/templates/index.html`: `afterLogin()` (including the one-line `window.afterLogin = afterLogin;` seam) and the `?login=google` boot-time detection ONLY (client post-login code is in index.html; no other file). ALSO within afterLogin(): the string-id payload filter and the sync-failure guard (KEYING DESIGN).
   - `.loop/12/journal.md`.
   - `app/main.py` line 49 ONLY: the existing `from app.threads import ...` line, to add `ClientThread` (or another type the threads-sync route uses). APPROVED 2026-09-19 after the fact by a human — manifest gap, see journal; no other import or top-level edit in main.py.
+  - `app/main.py` two lines ONLY, inside the two #11 route handlers that serialize a Thread: the `"client_id": t.client_id,` line in `GET /threads` (list handler) and the `"client_id": thread.client_id,` line in `GET /threads/{thread_id}` (detail handler). APPROVED 2026-09-20 after the fact by a human — manifest gap, required by KEYING DESIGN's "list and detail models expose client_id"; see journal. No other edit to either handler.
+  - GENERAL RULE (retro-candidate, applies beyond #12): when a ticket adds a field to a model, the owned-region list must also name every serializer/route that emits that model — not just the model definition.
   - NOT owned, still escalates: any other index.html change, `app/config.py`, `pyproject.toml`, anything else.
