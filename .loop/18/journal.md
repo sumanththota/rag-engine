@@ -278,6 +278,30 @@ is not used by the validation-error or network-catch calls (both use hardcoded s
 literals, not `errMsg`). Verified against real code (both pass) and two targeted mutations:
 removing the `errMsg` call specifically (else-block structure still found, errMsg call now
 correctly absent → fails) and restructuring away the `if (resp.ok)` block entirely (else-
-block check now correctly fails). Full suite re-run: 143/143 green. Pushed `<pending>` to
+block check now correctly fails). Full suite re-run: 143/143 green. Pushed `6b8a8ec` to
 `origin/impl/18-login-ui`; re-syncing `verify/18-login-ui` and dispatching verifier round 2
 next.
+
+## Orchestrator — verifier round 2: PASS, labeled agent:verified — 2026-09-20T18:25:00Z
+
+Raw verdict posted directly to PR #29
+(https://github.com/sumanththota/rag-engine/pull/29#issuecomment-5751260839), not relayed or
+paraphrased here. Branch provenance re-confirmed clean (`impl` == `verify` == both origin
+refs == `a3950b3`). The verifier built its own independent mutants against the errMsg-
+anchored assertion (not trusting the orchestrator's round-2 fix description) and confirmed
+all three kill: the 401-branch call removed while the catch-block decoy remains, the
+`if (resp.ok)` extraction broken two different ways, and `afterLogin()` moved into the
+failure branch. Scoped tests 10x4 and full suite 143x3, no flake. No `index.html` delta since
+`c016d9c`, so the orchestrator's earlier real-browser evidence (check (d) level 3, posted to
+PR #29) still applies unchanged.
+
+Verifier noted three non-blocking residual mutants for the retro (a bare `afterLogin()` call
+missing its `window.` prefix, a dead-code decoy `showLoginError(errMsg)` duplicate, and
+criterion 4's overlay-toggle no-op) that survive the static/grep layer but are all covered by
+the level-3 browser evidence layer — consistent with this repo's standing gap (no JS harness)
+rather than a defect in this round's work.
+
+No `BLOCKED-ON-<id>` criteria on this ticket (unlike #12) — nothing here gates the merge on a
+carve-out. Labeled `agent:verified` on issue #18, marked PR #29 ready for review (was draft).
+Confirmed `verify/18-login-ui` has an EMPTY diff against `impl/18-login-ui` (both `a3950b3`)
+before either action, per the standing rule for this state transition.
