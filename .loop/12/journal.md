@@ -536,3 +536,72 @@ verifier r1 NEEDS_WORK, impl r3, this entry). At max_iterations budget (8) — t
 verifier round should be treated as the last one before this needs a human look at whether
 the ticket itself (not just its tests) needs a different approach, per loop.md's stop
 conditions.
+
+## Verifier round 2 — 2026-09-20T06:35:00Z — NEEDS_WORK — STOP, agent:blocked
+
+Full raw verdict on PR #26. All 5 mutation_targets confirmed genuinely killed EXCEPT two
+new survivors, both against the exact criteria that have been fragile every round:
+
+- **Finding A (criterion 3):** `test_after_login_defined_in_index_html` only strips `//`
+  line comments. The verifier block-commented OUT THE ENTIRE sync fetch call — deleting the
+  feature's core behavior — and the test still passed, because a comment describing what
+  the code does (left in place) still contains the literal strings the check searches for.
+- **Finding B (criterion 4):** `test_get_thread_orders_messages_with_id_tiebreaker` strips
+  `#` comments but `inspect.getsource()` still returns the function's DOCSTRING, which is
+  not comment syntax. The verifier removed the real tiebreaker from the executed query and
+  put the magic string in the docstring instead — test still passed.
+
+**This is not a new, unrelated defect — it is the SAME failure class recurring a third and
+fourth time**, each time defeated by patching around the exact comment/doc syntax the
+previous round's verifier happened to use, without addressing the actual weakness: for
+these two specific criteria, the automated regression check is a TEXT-MATCH proxy for a
+runtime property (a call-order guarantee with no JS harness to verify it directly; a SQL
+tie-break guarantee Postgres does not enforce without an explicit sort key), and any
+text-match proxy can be satisfied by text that isn't the executed code. A fifth patch would
+almost certainly go the same way — round 2's verifier already predicted this shape of
+attack in its own report before finding it.
+
+**What is NOT in question:** the production code itself. Two independent verifiers, in two
+separate rounds, mutation-tested the actual implementation (not just the tests) and it held
+every time. The orchestrator's own real-browser run (posted to PR #26, an earlier round)
+independently observed HAZARD 2 occurring live — two messages getting a byte-identical
+`created_at` — and the `id ASC` tiebreaker correctly preserving their order in that live
+run. The feature works. What's unresolved is whether an AUTOMATED test can prove it stays
+working, given this repo's specific constraints (no JS test harness; Postgres's
+undocumented-but-consistent physical-order fallback that makes tie-break behavior hard to
+force deterministically in a small test table).
+
+**Escalation: STOP, not a fifth fix round.** Per loop.md's ESCALATION TRIGGER 2 NUANCE,
+this is closer to the "stuck implementer / spec is wrong" case than the "three distinct
+defects" case — the recurring root cause (LOOP.md's `mutation_target` for these two
+criteria asks for a guarantee that's provable by direct behavioral test, when in this
+repo's environment it may only be soundly provable by static/documented verification for
+criterion 3's fetch-order and by construction/code-review for criterion 4's Postgres
+tie-break). This is a **respec** candidate for these two criteria's evidentiary method, not
+a bug in the code or in this round's test-writing. Also at `max_iterations` budget (8 real
+entries before this one; this is the 9th).
+
+Labeling `agent:blocked`. Options for the human, not decided here:
+1. **Respec criteria 3 & 4's verify_via** to accept what's actually achievable here: for
+   criterion 3, the grep-level check as an best-effort static guard (not gameproof — that's
+   inherent to text-matching, no clever stripping fixes it) PLUS the one-time real-browser
+   evidence already on PR #26 as the load-bearing proof, rather than treating a 5th grep
+   iteration as the goal. For criterion 4, similarly accept the code-review-verified SQL
+   text plus the live browser evidence of correct behavior under a real tie, rather than
+   chasing a mutation-proof source-text check that inspect.getsource() structurally can't
+   provide (it will always include comments AND docstrings — there is no third comment
+   syntax left to strip).
+2. **Invest in an actual behavioral fix**: add a minimal JS test harness (even a single
+   Node-based smoke test) for criterion 3's real call order; construct a criterion-4 test
+   that forces a genuine tie via direct SQL manipulation of `created_at` on rows inserted
+   in a deliberately scrambled order relative to their ids, which WOULD create real
+   divergence between "tiebreaker present" and "tiebreaker absent" behavior. Bigger scope
+   than a fix round — likely worth its own follow-up ticket rather than blocking this one
+   further.
+3. **Accept round 3's evidence as sufficient** and downgrade these two mutation_targets to
+   documentation-only in LOOP.md (no verifier obligation to re-attack them), given that two
+   independent verifiers and one live browser run already found the actual code correct —
+   the remaining risk is a future regression going undetected automatically, which is a
+   real but bounded risk, not a sign anything is broken today.
+
+Not choosing between these — that judgment is exactly what escalation to a human is for.
