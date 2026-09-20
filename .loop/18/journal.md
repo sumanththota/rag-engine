@@ -146,3 +146,27 @@ state (`git checkout -- .claude/launch.json` on the main checkout) — confirmed
 
 All four UI criteria and the region-boundary fix are done. Re-syncing `verify/18-login-ui`
 to this branch's tip next, then dispatching the verifier (round 1 of `max_verify_rounds: 3`).
+
+## Orchestrator — verifier round 1: NEEDS_WORK — 2026-09-20T17:45:00Z
+
+Raw verdict posted directly to PR #29
+(https://github.com/sumanththota/rag-engine/pull/29#issuecomment-5751156989), not relayed or
+paraphrased here. Branches confirmed in sync (`origin/impl` == `origin/verify` == `e6fbf99`)
+before the round ran. Criteria 1, 2, 4, and the full suite (143x3, no flake) all PASS.
+Production code (`app/templates/index.html`'s login-ui region) is not in question.
+
+**Blocker — criterion 3's test, `test_18_index_html_failure_branch_no_afterlogin`, is
+hollow**: every assertion sits inside `if if_resp_ok_match:` with no `else: fail` branch. The
+verifier built a mutation restructuring the success/failure branches so the extraction regex
+no longer matches, then confirmed the test still PASSES with zero assertions actually run —
+even with `afterLogin()` called on a failed login. This is the exact anti-pattern already
+documented in this repo's `CONVENTIONS.md` §7 ("No test's only meaningful assertion may sit
+behind a runtime conditional... If the value can be absent, that absence IS the failure case
+and must assert failure, not skip silently") — the implementer wrote code that violates a
+standing, pre-existing convention, not a new mistake. Also flagged: no assertion anywhere
+(static or pytest) that the 401 branch actually renders/sets a visible error message — the
+orchestrator's own browser evidence confirmed this behaviorally (level 3), but check (d)
+requires all three levels, and the automated levels 1/2 don't cover it.
+
+Relabeled `agent:in-progress`. Dispatching a fix-round implementer scoped strictly to
+`tests/test_login_ui.py` — no production code change is in question.
