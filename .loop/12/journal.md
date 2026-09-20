@@ -808,3 +808,39 @@ step 8, not a fourth round. Dispatching VERIFIER now (model: sonnet per this tic
 `model_routing`, read-only, Write/Edit disallowed) on `verify/12-thread-sync` in the fresh
 worktree, running `verifier_command: pytest -q tests/test_threads.py` plus the seven
 per-criterion checks from verifier.md. It will post its raw verdict to PR #26 directly.
+
+## Orchestrator — verifier round 3: PASS, labeled agent:verified — 2026-09-20T16:35:00Z
+
+Verifier round 3 (of `max_verify_rounds: 3`) posted its raw verdict directly to PR #26
+(https://github.com/sumanththota/rag-engine/pull/26#issuecomment-5751008674) —
+**PASS**, not relayed or paraphrased here. Summary of what it independently reproduced (not
+trusted from journal or implementer report): fresh `git fetch` confirmed `origin/impl`,
+`origin/verify`, and local `verify/12-thread-sync` all at `69afd18`; region diff matches
+owned regions exactly; `tests/test_threads.py` (16) and full suite (133) each green 3x
+consecutively, no flake; all 5 `mutation_target`s killed in an isolated scratch copy (own
+throwaway Postgres DB for the index-drop case, never touching the shared dev DB or the
+verify worktree itself) then reverted green — including the two round-4 replacement tests
+for criteria 3/4, confirmed genuinely execution-based and no longer comment/docstring-
+gameable.
+
+**Criterion 3 reported by the verifier as BLOCKED-ON-18 (unmet)** — correct and expected:
+the "automatically triggered by a real login submit" half is #18's owned region per this
+ticket's carve-out; only the mechanistic half (afterLogin() calling sync-then-hydrate in the
+right order) is this ticket's to prove, and that half passed.
+
+Actions taken: removed `agent:gate-pending`, added `agent:verified` on issue #12; marked PR
+#26 ready for review (was draft). Confirmed `verify/12-thread-sync` has an EMPTY diff against
+`impl/12-thread-sync` (both at `69afd18` — the verifier made no edits, as required for its
+read-only remit) before taking either action.
+
+**NOT merging.** Per loop.md's agent:verified step: "A criterion marked BLOCKED-ON-<id> ...
+is excluded from the gate-pending and PASS tests only under that LOOP.md's carve-out
+conditions; the PR must not say `Closes #N` while one is open. Reaching agent:verified with
+one open is still a stop-and-report for the human, never a merge." Criterion 3 is exactly
+that open BLOCKED-ON-18 case. This is a deliberate governance checkpoint in the protocol
+itself, not a technical blocker with a generatable fix — merging is a shared, hard-to-reverse
+action gated on human authorization by the protocol's own explicit text, independent of any
+run-until-done instruction for technical issues. Stopping here for a human decision on
+whether to merge now (accepting the carve-out, with #18 re-checking the full behavior once
+its login form exists) or hold the merge until #18 lands. PR body already correctly omits
+any `Closes #12` auto-close keyword.
