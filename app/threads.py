@@ -69,6 +69,21 @@ class ThreadDetail(BaseModel):
     messages: list[ThreadMessage]
 
 
+class ThreadSyncInput(BaseModel):
+    """One local Thread to sync to the server."""
+
+    client_thread_id: str
+    title: str | None = None
+    messages: list[dict] | None = None
+
+
+class ThreadSyncResult(BaseModel):
+    """Result of syncing a single local Thread to the server."""
+
+    client_thread_id: str
+    id: int
+
+
 class ThreadStore:
     """Postgres-backed writer for the `threads` and `thread_messages` tables.
     Persists logged-in users' multi-turn conversations."""
@@ -96,6 +111,17 @@ class ThreadStore:
                     CREATE INDEX IF NOT EXISTS threads_user_id_idx
                     ON threads (user_id)
                     WHERE deleted_at IS NULL
+                    """
+                )
+                await conn.execute(
+                    """
+                    ALTER TABLE threads ADD COLUMN IF NOT EXISTS client_thread_id text
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS threads_user_client_id_idx
+                    ON threads (user_id, client_thread_id) WHERE client_thread_id IS NOT NULL
                     """
                 )
                 await conn.execute(
@@ -204,13 +230,13 @@ class ThreadStore:
                 if thread_row is None:
                     return None
 
-                # Fetch messages in order
+                # Fetch messages in order (HAZARD 2: id ASC tiebreaker for same-transaction bulk inserts)
                 message_rows = await conn.fetch(
                     """
                     SELECT id, role, content, sources, created_at
                     FROM thread_messages
                     WHERE thread_id = $1
-                    ORDER BY created_at ASC
+                    ORDER BY created_at ASC, id ASC
                     """,
                     thread_id,
                 )
@@ -294,3 +320,69 @@ class ThreadStore:
                 f"soft_delete_thread failed for thread_id={thread_id}: {e}"
             ) from e
         return result == "UPDATE 1"
+
+    async def sync_threads(self, user_id: int, threads_to_sync: list[ThreadSyncInput]) -> list[ThreadSyncResult]:
+        """Syncs a batch of local Threads to the server (upsert by user_id + client_thread_id).
+
+        Returns a list of ThreadSyncResult with server IDs for each synced thread.
+        Wraps the entire operation in a transaction for atomicity — if any message
+        fails mid-batch, nothing partial is left behind (rule 4, HAZARD 1).
+        For true idempotence, deletes old messages before reinserting on upsert.
+        """
+        try:
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    results = []
+                    for thread_input in threads_to_sync:
+                        # Upsert thread: ON CONFLICT (user_id, client_thread_id) WHERE client_thread_id IS NOT NULL
+                        # HAZARD (Postgres partial-index inference): must repeat the WHERE predicate
+                        thread_row = await conn.fetchrow(
+                            """
+                            INSERT INTO threads (user_id, client_thread_id, title)
+                            VALUES ($1, $2, $3)
+                            ON CONFLICT (user_id, client_thread_id) WHERE client_thread_id IS NOT NULL
+                            DO UPDATE SET title = EXCLUDED.title, updated_at = now()
+                            RETURNING id
+                            """,
+                            user_id,
+                            thread_input.client_thread_id,
+                            thread_input.title,
+                        )
+                        server_thread_id = thread_row["id"]
+
+                        # For idempotent sync: delete existing messages and reinsert.
+                        # This ensures second call with identical payload doesn't duplicate.
+                        await conn.execute(
+                            "DELETE FROM thread_messages WHERE thread_id = $1",
+                            server_thread_id,
+                        )
+
+                        # Insert messages for this thread (if any)
+                        if thread_input.messages:
+                            for msg in thread_input.messages:
+                                role = msg.get("role", "user")
+                                content = msg.get("content", "")
+                                sources = msg.get("sources")
+                                sources_json = json.dumps(sources) if sources else None
+
+                                await conn.execute(
+                                    """
+                                    INSERT INTO thread_messages (thread_id, role, content, sources)
+                                    VALUES ($1, $2, $3, $4)
+                                    """,
+                                    server_thread_id,
+                                    role,
+                                    content,
+                                    sources_json,
+                                )
+
+                        results.append(
+                            ThreadSyncResult(
+                                client_thread_id=thread_input.client_thread_id,
+                                id=server_thread_id,
+                            )
+                        )
+
+                    return results
+        except _DB_ERRORS as e:
+            raise ThreadsError(f"sync_threads failed for user_id={user_id}: {e}") from e
