@@ -413,3 +413,19 @@ Result: PASS
 - `.loop/12/journal.md`: This entry (owned region)
 
 **Status:** Ready for commit and push.
+
+## Orchestrator — 2026-09-20T (resume after gate rework pass #2, commit bf1dcdb) — P6 traced: NOT EXPLOITABLE
+
+Resuming per human instruction. Two things needed independent verification before deciding the next rework pass's scope: whether rework pass #2's report (bf1dcdb) was itself accurately reflected on origin (it was — `origin/impl/12-sync-threads-login` matched the journal exactly, issue #12's `agent:blocked` label matched, PR #20 draft/open matched), and whether P6 ("write explicit id from payload") is actually reachable at all, per the open question left in that entry.
+
+**Traced every write path in `app/threads.py` at commit bf1dcdb** (read-only; no code changed). Two `INSERT INTO threads` statements exist in the file:
+- Line 159, `create_thread`: `INSERT INTO threads (user_id, title) VALUES ($1, $2) RETURNING id` — no id column reference at all.
+- Line 364, `sync_threads`: `INSERT INTO threads (user_id, client_id, title) VALUES ($1, $2, $3) ON CONFLICT (user_id, client_id) DO NOTHING RETURNING id` — `client_thread.id` (the client-supplied string) is bound only to the `$2` / `client_id` parameter position. `id` is never supplied; it always comes from `RETURNING id` against the `bigserial` sequence.
+
+`client_thread.id` (line 370) and the lookup at line 408 both reference only the `client_id` column. There is no code path anywhere in this file — sync or otherwise — where a client-supplied value reaches the `id` (primary key) column. This matches the ticket's own KEYING DESIGN ruling ("Server ids stay bigserial. Sync NEVER inserts an explicit id.") — the design was followed correctly; there was never a live vulnerability here.
+
+**Determination (per verifier.md item 10's "not exploitable" provision): P6 is NOT EXPLOITABLE, not a missing test.** Per that rule, a reduced, honest count beats a manufactured test for a path that isn't reachable — P6 is retired from the required mutation count with this trace as its evidence, not replaced with a new forced test. **Required count for gate-pending is therefore 5 exploitable mutations (P1, P2, P3, P4, P5), not 6** — P2's own mutation is genuine per rework pass #2's independent reproduction (mischaracterized narrative aside), so P1–P5 are all confirmed real.
+
+**What's actually still open, narrower than rework pass #2 left it:** ONLY the transaction test. The transaction wrap in `sync_threads` (lines 360→) is correct code (confirmed by reading it — the whole per-thread write, including all message INSERTs, is inside one `async with conn.transaction():`), but no test in the suite forces a mid-sequence failure to prove the rollback. Next implementer pass must write exactly that: patch/monkeypatch the message INSERT (or use a raw `conn.execute` that raises) to fail on the 2nd of 3+ messages within one test process, then assert the thread row is entirely absent afterward (`GET /threads/{id}` on that client's mapped id returns 404, or the client_id never appears in `GET /threads`). Do not touch the P6 test — replace its current hollow assertion with a short comment/docstring citing this journal entry's trace ("no client-controlled input reaches the id column — see journal 2026-09-20") rather than another mutation attempt.
+
+State: agent:blocked -> agent:in-progress (spawning implementer, rework pass #3, narrowed scope).
