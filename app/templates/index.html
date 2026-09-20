@@ -1645,6 +1645,11 @@
   }
 
   document.getElementById("login-form").addEventListener("submit", handleLoginSubmit);
+
+  // Check login status on page load
+  checkLoginStatus().catch(function (err) {
+    console.warn("checkLoginStatus on load failed:", err);
+  });
   // endregion: login-ui (#18)
 
   // region: after-login (#12)
@@ -1706,11 +1711,6 @@
   // Hydrate threads from server for logged-in users
   hydratThreadsFromServer().catch(function (err) {
     console.warn("Hydration failed:", err);
-  });
-
-  // Check login status on page load
-  checkLoginStatus().catch(function (err) {
-    console.warn("checkLoginStatus on load failed:", err);
   });
 })();
   </script>
