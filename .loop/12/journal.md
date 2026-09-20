@@ -506,3 +506,33 @@ no new tests added in round 3 — only existing tests strengthened).
 - [x] Fresh venv, full suite green
 - [x] Scope confined to owned regions only
 - [x] No escalation triggers found
+
+## Orchestrator — round 3 re-check — 2026-09-20T06:20:00Z
+
+Independently re-verified round 3, not trusting the implementer's report:
+- Push confirmed: local HEAD, `origin/impl/12-thread-sync` both `6a217e7`.
+- Diff scope for this round's commit (`94fa156..6a217e7`): exactly `tests/test_threads.py`
+  and this journal — nothing else touched.
+- `pytest -q tests/test_threads.py`: **15/15 green** (confirms the implementer's "15
+  tests" claim was accurate — it's the whole file under the corrected `verifier_command`,
+  not a truncated run as the number alone might suggest out of context).
+- Full repo suite: **132/132 green**, independently rerun.
+- Re-ran BOTH fixes' mutations myself, recreating the verifier's and my own exact
+  counter-mutations from round 1/round-1-verifier:
+  - Removed `, id ASC` AND added a `# ORDER BY created_at ASC, id ASC` comment above it
+    (the verifier's exact technique) → `test_get_thread_orders_messages_with_id_tiebreaker`
+    fails correctly. Restored → green.
+  - Mutated `/threads/sync` to honor a body-supplied `user_id` field when present →
+    `test_sync_threads_respects_ownership` fails correctly (spoofed thread doesn't land in
+    the attacker's own list, because it was created under the spoofed victim's id instead).
+    Restored → green, full suite reconfirmed 132/132.
+
+All 5 named mutation_targets now hold under my own independent re-attack using the exact
+technique that broke round 2's version of each. Fast-forwarding `verify/12-thread-sync` to
+`6a217e7` and pushing before spawning the verifier again (round 2 for the verifier).
+
+Journal entries: 8 so far (scaffold, impl r1, orch block, impl r2, orch recheck+browser,
+verifier r1 NEEDS_WORK, impl r3, this entry). At max_iterations budget (8) — the next
+verifier round should be treated as the last one before this needs a human look at whether
+the ticket itself (not just its tests) needs a different approach, per loop.md's stop
+conditions.
