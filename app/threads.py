@@ -352,63 +352,69 @@ class ThreadStore:
         try:
             async with self._pool.acquire() as conn:
                 for client_thread in client_threads:
-                    # Upsert the thread: INSERT ... ON CONFLICT DO NOTHING RETURNING id
-                    row = await conn.fetchrow(
-                        """
-                        INSERT INTO threads (user_id, client_id, title)
-                        VALUES ($1, $2, $3)
-                        ON CONFLICT (user_id, client_id) DO NOTHING
-                        RETURNING id
-                        """,
-                        user_id,
-                        client_thread.id,
-                        client_thread.title,
-                    )
-
-                    # If the insert succeeded, row is not None and we have the new server id
-                    # If there was a conflict, row is None and we need to look up the existing id
-                    if row is not None:
-                        # New thread was inserted
-                        server_thread_id = row["id"]
-                        new_thread_count += 1
-
-                        # Insert all messages for this thread in order
-                        for client_msg in client_thread.messages:
-                            sources_json = json.dumps(client_msg.sources) if client_msg.sources else None
-                            await conn.execute(
-                                """
-                                INSERT INTO thread_messages (thread_id, role, content, sources)
-                                VALUES ($1, $2, $3, $4)
-                                """,
-                                server_thread_id,
-                                client_msg.role,
-                                client_msg.content,
-                                sources_json,
-                            )
-
-                        # Update the thread's updated_at timestamp
-                        await conn.execute(
-                            "UPDATE threads SET updated_at = now() WHERE id = $1",
-                            server_thread_id,
-                        )
-                    else:
-                        # Thread already exists, look up its server id
-                        existing_row = await conn.fetchrow(
+                    # Wrap each thread's writes in a transaction: thread INSERT + all message INSERTs together.
+                    # If a message insert fails after the thread INSERT succeeds, the entire transaction
+                    # rolls back, so no partial thread is left behind. Without this, ON CONFLICT DO NOTHING
+                    # means every retry after a partial failure silently thinks the thread already exists
+                    # and never revisits the missing messages: permanent silent data loss.
+                    async with conn.transaction():
+                        # Upsert the thread: INSERT ... ON CONFLICT DO NOTHING RETURNING id
+                        row = await conn.fetchrow(
                             """
-                            SELECT id FROM threads
-                            WHERE user_id = $1 AND client_id = $2
+                            INSERT INTO threads (user_id, client_id, title)
+                            VALUES ($1, $2, $3)
+                            ON CONFLICT (user_id, client_id) DO NOTHING
+                            RETURNING id
                             """,
                             user_id,
                             client_thread.id,
+                            client_thread.title,
                         )
-                        if existing_row:
-                            server_thread_id = existing_row["id"]
-                        else:
-                            # This should not happen if the upsert logic is correct
-                            continue
 
-                    # Add the mapping for this thread (both new and existing)
-                    thread_mappings.append({"client_id": client_thread.id, "id": server_thread_id})
+                        # If the insert succeeded, row is not None and we have the new server id
+                        # If there was a conflict, row is None and we need to look up the existing id
+                        if row is not None:
+                            # New thread was inserted
+                            server_thread_id = row["id"]
+                            new_thread_count += 1
+
+                            # Insert all messages for this thread in order
+                            for client_msg in client_thread.messages:
+                                sources_json = json.dumps(client_msg.sources) if client_msg.sources else None
+                                await conn.execute(
+                                    """
+                                    INSERT INTO thread_messages (thread_id, role, content, sources)
+                                    VALUES ($1, $2, $3, $4)
+                                    """,
+                                    server_thread_id,
+                                    client_msg.role,
+                                    client_msg.content,
+                                    sources_json,
+                                )
+
+                            # Update the thread's updated_at timestamp
+                            await conn.execute(
+                                "UPDATE threads SET updated_at = now() WHERE id = $1",
+                                server_thread_id,
+                            )
+                        else:
+                            # Thread already exists, look up its server id
+                            existing_row = await conn.fetchrow(
+                                """
+                                SELECT id FROM threads
+                                WHERE user_id = $1 AND client_id = $2
+                                """,
+                                user_id,
+                                client_thread.id,
+                            )
+                            if existing_row:
+                                server_thread_id = existing_row["id"]
+                            else:
+                                # This should not happen if the upsert logic is correct
+                                continue
+
+                        # Add the mapping for this thread (both new and existing)
+                        thread_mappings.append({"client_id": client_thread.id, "id": server_thread_id})
 
         except _DB_ERRORS as e:
             raise ThreadsError(f"sync_threads failed for user_id={user_id}: {e}") from e
