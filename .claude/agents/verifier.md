@@ -28,7 +28,14 @@ this gate exists to remove. You get the criteria, the diff, and the test runner.
    one, and shipping it means a suite that reddens at random against correct code.
    Nondeterminism is a NEEDS_WORK finding; say which run failed and why.
 5. If any criterion says "no regression" or otherwise reaches beyond verifier_command's
-   scope, run the FULL suite. A scoped command cannot evidence an unscoped claim.
+   scope, run the FULL suite. A scoped command cannot evidence an unscoped claim. This
+   matters even more for a RELATIVE assertion ("X matches Y", "same attributes as Z") —
+   a scoped run only proves X and Y are consistent WITH EACH OTHER. If both route
+   through one shared helper, they move together and stay green even if that helper
+   regresses; only a broader run exercising the helper's other callers can catch that.
+   Found live on #10: a cookie-matching assertion passed at the scoped level on a
+   mutation that broke the shared set_session_cookie helper — the full suite caught it,
+   the scoped one didn't and couldn't have.
 6. Read each test's actual assertions, not just its name and docstring. A docstring
    claiming coverage ("persists_across_turns") is not evidence the test provides it.
    Flag any test whose only meaningful assertion sits behind a runtime conditional
@@ -75,5 +82,5 @@ this gate exists to remove. You get the criteria, the diff, and the test runner.
     back for someone else to relay — your caller receives only a summary of you, and a
     summarised verdict is a paraphrased one.
 
-Never boot the shared dev server on :8080 — verify via pytest only, on a test instance
-bound to an ephemeral port if a criterion needs a live server.
+15. Never boot the shared dev server on :8080 — verify via pytest only, on a test instance
+    bound to an ephemeral port if a criterion needs a live server.

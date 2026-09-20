@@ -35,7 +35,15 @@ or your journal. Evidence only.
    thread_id bounds check landed on 2 of 4 routes sharing the identical need; the
    other 2 kept 500ing until a second round caught it specifically.
 
-4. If a criterion involves ownership or access control (a user can only see/edit/
+4. If a criterion involves a multi-row write that's meant to be retry-safe (an
+   upsert, ON CONFLICT DO NOTHING/UPDATE, "sync" semantics), wrap the whole write
+   in ONE transaction. Without it, a partial failure — thread row commits, a
+   message row after it doesn't — leaves permanent, silent data loss: every retry
+   sees the thread already exists via ON CONFLICT and skips it, never revisiting
+   the missing rows. Write a test that forces the failure mid-sequence and confirms
+   nothing partial was left behind. Found live on #12 before it ever reached verify.
+
+5. If a criterion involves ownership or access control (a user can only see/edit/
    delete their own X), write the test from the ATTACKER'S perspective, not the
    owner's: a second user attempting the action against the first user's resource,
    asserting the attempt is rejected AND the target resource is unchanged afterward.
@@ -44,32 +52,32 @@ or your journal. Evidence only.
    user's thread by supplying its id) went undetected for 4 rounds because every
    test checked what an owner could do, never what a non-owner could do.
 
-5. Give every new test its own setup and its own cleanup, scoped to its own fixture
+6. Give every new test its own setup and its own cleanup, scoped to its own fixture
    prefix (test-<id>-*). Do not rely on another test's finally block, teardown, or
    ordering. Found live on #9 AND recurred on #11 despite being written into
    CONVENTIONS.md after #9: run each new test file alone, filtered, and reordered
    before claiming done — not just as part of the full suite.
 
-6. A test that asserts something was NOT created/written must target a resource
+7. A test that asserts something was NOT created/written must target a resource
    that could plausibly have been affected — seed the real precondition first, then
    assert the negative. A test asserting "no thread was created" against an id that
    could never exist under the schema passes trivially regardless of the
    implementation, and proves nothing. Found live on #11's criterion-6 test.
 
-7. Do NOT boot the shared dev server on :8080. Spin up a test instance on an ephemeral
+8. Do NOT boot the shared dev server on :8080. Spin up a test instance on an ephemeral
    port where a criterion needs one to be running.
 
-8. Stamp a start time in your first journal entry for this ticket. Append one entry
+9. Stamp a start time in your first journal entry for this ticket. Append one entry
    per iteration — not one consolidated entry at the end. The journal is the next
    agent's onboarding read; a single retrospective entry is not a readable tail.
 
-9. Before claiming anything is pushed, verify against origin directly:
-   `git ls-remote origin <branch>` compared to `git rev-parse <branch>`. Do not
-   report "pushed" from memory of having run `git push` earlier — confirm it landed.
-   Found live on #11, twice: a claim of "pushed" that was local-only, and a claim
-   of worktree isolation that had already been torn down by the time it was checked.
+10. Before claiming anything is pushed, verify against origin directly:
+    `git ls-remote origin <branch>` compared to `git rev-parse <branch>`. Do not
+    report "pushed" from memory of having run `git push` earlier — confirm it landed.
+    Found live on #11, twice: a claim of "pushed" that was local-only, and a claim
+    of worktree isolation that had already been torn down by the time it was checked.
 
-10. Set agent:gate-pending ONLY when every self-test is green AND every verify_via:
+11. Set agent:gate-pending ONLY when every self-test is green AND every verify_via:
     HTTP/UI criterion has a test that actually exercises that surface. If a criterion
     is still unmet, say so in the journal and stay in-progress. The ONLY exception is a
     criterion whose LOOP.md entry is marked BLOCKED-ON-<id> (a dependency not yet merged):
@@ -79,5 +87,5 @@ or your journal. Evidence only.
     — the orchestrator produces that evidence; your job is the code, the static-grep
     evidence and the route-level tests.
 
-11. Do not open a PR, do not run the verifier, do not label agent:verified. That
+12. Do not open a PR, do not run the verifier, do not label agent:verified. That
     separation is the whole point — hand off, don't self-certify.
