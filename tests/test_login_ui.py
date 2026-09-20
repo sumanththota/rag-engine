@@ -271,15 +271,20 @@ def test_18_index_html_failure_branch_no_afterlogin():
     # Criterion 3 part 2: A failed login must show an error message.
     # The else/failure branch (immediately after if resp.ok) must call showLoginError().
     # Verify the pattern: if (resp.ok) { ... } else { ... showLoginError ... }
-    success_to_else_pattern = r'if\s*\(\s*resp\.ok\s*\)\s*\{[^}]*\}\s*else\s*\{.*?showLoginError\s*\('
-    failure_shows_error = re.search(
-        success_to_else_pattern,
-        region_text,
-        re.DOTALL
-    )
-    assert failure_shows_error is not None, \
-        "if (resp.ok) {...} else {...showLoginError(...)} structure not found; " \
-        "failure branch must call showLoginError(...) to display error on failed login"
+    success_to_else_pattern = r'if\s*\(\s*resp\.ok\s*\)\s*\{[^}]*\}\s*else\s*\{'
+    else_block_start = re.search(success_to_else_pattern, region_text, re.DOTALL)
+    assert else_block_start is not None, \
+        "if (resp.ok) {...} else {...} structure not found around the fetch('/login') response handling"
+
+    # The response-derived error message (errMsg) must reach showLoginError — this is the
+    # 401-branch's own call, distinct from the validation-error and network-catch fallback
+    # calls elsewhere in the same function, which use hardcoded strings, not errMsg. A
+    # non-greedy scan for a bare "showLoginError(" here would also match those two unrelated
+    # calls further down the function; anchoring on the errMsg variable name is what makes
+    # this check specific to the 401 branch rather than satisfiable by an unrelated call.
+    assert re.search(r'showLoginError\s*\(\s*errMsg\s*\)', region_text), \
+        "failure branch must call showLoginError(errMsg) with the response-derived message " \
+        "to display a real error on a 401 login failure"
 
 
 # ---- Criterion 4: Form hidden when logged in (grep check) --------------------

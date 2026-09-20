@@ -252,3 +252,32 @@ tests/test_auth.py::test_signup_then_duplicate_signup_conflicts
 - ✓ Three mutation types that would cause real failures are all caught
 - ✓ Full suite (143 tests) passes
 - ✓ Test passes green when run alone: `pytest -q tests/test_login_ui.py::test_18_index_html_failure_branch_no_afterlogin` → PASSED
+
+## Orchestrator — round-2 fix tightened before verifier re-spawn — 2026-09-20T18:05:00Z
+
+Independently re-verified round 2 (not trusting the implementer's report — ran the diff and
+tests myself): `git diff 7d772e3...cd23951` touches only `tests/test_login_ui.py` and this
+journal, exactly as scoped. 143/143 green, reproduced fresh.
+
+Ran my own mutation check on the NEW `showLoginError` assertion before trusting it, using the
+same adversarial spirit as the round-1 verifier. Found the implementer's `.*?showLoginError\('
+pattern (non-greedy, unbounded past the else block) also matches a SECOND, unrelated
+`showLoginError(...)` call later in the same function — the network-error `catch` block's
+fallback message ("An error occurred. Please try again."). A mutation that removes only the
+401-branch's own `showLoginError(errMsg)` call (the actual criterion-3 mechanism) while
+leaving the catch-block's literal-string call in place still satisfied the old pattern —
+another instance of the same class of gap round 1 found, just one layer deeper: "does X
+appear later in the text" is not "does X appear in the *right* branch."
+
+Fixed directly (mechanical tightening, not a design change): replaced the open-ended
+`.*?showLoginError\(` scan with two separate assertions — (1) the `if (resp.ok) {...}
+else {` structure exists at all (hard failure if not, same as round 2's fix), and (2) a
+`showLoginError\(\s*errMsg\s*\)` call exists anywhere in the region — anchored on the
+`errMsg` variable name, which is specific to the 401-branch's response-derived message and
+is not used by the validation-error or network-catch calls (both use hardcoded string
+literals, not `errMsg`). Verified against real code (both pass) and two targeted mutations:
+removing the `errMsg` call specifically (else-block structure still found, errMsg call now
+correctly absent → fails) and restructuring away the `if (resp.ok)` block entirely (else-
+block check now correctly fails). Full suite re-run: 143/143 green. Pushed `<pending>` to
+`origin/impl/18-login-ui`; re-syncing `verify/18-login-ui` and dispatching verifier round 2
+next.
