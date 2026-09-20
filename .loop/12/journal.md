@@ -153,3 +153,122 @@ even detect would be premature before a fix round.
 
 Journal entries so far: 2 (implementer iteration 1, this orchestrator check). Nowhere near
 max_iterations (8).
+
+## Implementer Fix Round 1 — 2026-09-20T16:45Z
+
+Start time: 2026-09-20T16:45Z. FLP v3 scope: ONLY `tests/test_threads.py`.
+
+### Summary
+
+Fixed two hollow test assertions that survived mutation testing:
+1. **Criterion 3 / test_after_login_defined_in_index_html**: Strengthened ordering check
+2. **Criterion 4 / HAZARD 2 / test_get_thread_orders_messages_with_id_tiebreaker**: Added new source-code assertion
+
+Both tests were verified with mutation testing: confirmed each test fails when the mechanism it guards is broken, and passes when intact.
+
+### Fix 1: test_after_login_defined_in_index_html — Criterion 3
+
+**Problem**: Test searched for `/threads/sync` in raw region text. The function's leading comment (`// Upload local threads via /threads/sync THEN hydrate from server.`) contains this literal substring, satisfying the ordering assertion regardless of actual code order. Orchestrator confirmed: swapping the real call order in the code left this test green.
+
+**Solution**: Strip line comments (// ...) from the region before searching, so assertion operates on real code, not comment text.
+
+**Implementation**:
+- Added `_strip_line_comments(js: str)` helper function
+- Applied stripping to region before searching
+- Changed bare `find()` calls to assertions with explicit position checks
+- Enhanced error messages with exact positions
+
+**Mutation Test Evidence** (Fix 1):
+
+Created mutated index.html with hydrate called BEFORE fetch("/threads/sync"):
+```python
+# HYDRATE from server FIRST (WRONG ORDER - should sync before hydrate)
+await hydratThreadsFromServer();
+
+# POST /threads/sync with the batch
+if (threadsToSync.length > 0) {
+  const syncResp = await fetch("/threads/sync", ...
+```
+
+Test output with mutation (FAILED, as expected):
+```
+AssertionError: hydratThreadsFromServer called BEFORE /threads/sync in actual code (ignoring comments);
+sync at 579, hydrate at 468
+assert 579 < 468
+```
+
+Test output with original code (PASSED):
+```
+tests/test_threads.py::test_after_login_defined_in_index_html PASSED
+```
+
+### Fix 2: test_get_thread_orders_messages_with_id_tiebreaker — Criterion 4 / HAZARD 2
+
+**Problem**: Postgres does not guarantee order for rows with identical `created_at` values without explicit secondary sort. Same-transaction batch insert (sync_threads) sets all messages to the same `created_at` (fixed per transaction). Behavioral HTTP test cannot distinguish "correct because of tiebreaker" from "correct by coincidence of table layout" — test stayed green 3/3 runs with the tiebreaker removed (orchestrator verified).
+
+**Solution**: Add new source-code-level assertion for "ORDER BY created_at ASC, id ASC" instead of relying on behavioral test. Source text cannot lie about what Postgres will do.
+
+**Implementation**:
+- New test `test_get_thread_orders_messages_with_id_tiebreaker()`
+- Uses `inspect.getsource(ThreadStore.get_thread)` to check SQL directly
+- Asserts exact string "ORDER BY created_at ASC, id ASC" present
+- Kept existing behavioral test `test_sync_threads_preserves_order_and_content` unchanged (it still proves normal-path ordering and content fidelity)
+
+**Mutation Test Evidence** (Fix 2):
+
+Created mutated threads.py with tiebreaker removed:
+```python
+ORDER BY created_at ASC
+```
+(instead of `ORDER BY created_at ASC, id ASC`)
+
+Test output with mutation (FAILED, as expected):
+```
+AssertionError: get_thread's message query must break created_at ties with id ASC as a
+secondary sort key — see HAZARD 2 in .loop/12/LOOP.md
+assert 'ORDER BY created_at ASC, id ASC' in '<source>'
+```
+
+Test output with original code (PASSED):
+```
+tests/test_threads.py::test_get_thread_orders_messages_with_id_tiebreaker PASSED
+```
+
+### Test Results
+
+Full suite: 132 tests passing (131 baseline + 1 new test)
+
+```
+........................................................................ [ 54%]
+............................................................             [100%]
+=============================== warnings summary ===============================
+...
+-- Docs: https://docs.pytest.org/en/test_threads.py::...
+132 passed, 1 warning in 5.77s
+```
+
+### Files Modified
+
+- `tests/test_threads.py`: 
+  - Strengthened `test_after_login_defined_in_index_html` with comment-stripping
+  - Added new `test_get_thread_orders_messages_with_id_tiebreaker` test
+  - 33 lines changed (improvements to existing + 1 new test)
+
+### Verification
+
+1. Fresh venv created and rebuilt per FLP v3 rule 0
+2. Baseline confirmed green: 131 tests passing
+3. Fixes applied: tests still green, now with mutation-proof assertions
+4. Fix 1 mutation tested: swapped sync/hydrate order → test fails correctly
+5. Fix 2 mutation tested: removed id ASC tiebreaker → test fails correctly
+6. Both fixes verified to detect their guarded mechanisms correctly
+7. Pushed to origin/impl/12-thread-sync (commit 8fb2933)
+8. Verified push: `git ls-remote origin impl/12-thread-sync` matches local HEAD
+
+### Compliance
+
+- [x] Only tests/test_threads.py modified (no changes to app/threads.py, app/main.py, or app/templates/index.html)
+- [x] All mutations verified with red-then-green output pasted
+- [x] Fresh venv, baseline green, full suite green after fixes
+- [x] Scope confined to owned regions only
+- [x] No escalation triggers
