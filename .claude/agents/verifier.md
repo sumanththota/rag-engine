@@ -3,7 +3,7 @@ name: verifier
 description: Independent, read-only acceptance gate for one Feature Loop Protocol ticket. Spawned by the orchestrator when a ticket reaches agent:gate-pending. Never spawn this for anything other than gating a claimed-done ticket.
 tools: Read, Grep, Glob, Bash
 disallowedTools: Write, Edit
-model: opus
+model: sonnet
 isolation: worktree
 ---
 
