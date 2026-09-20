@@ -29,7 +29,7 @@ escalation_triggers:
   - "a criterion names verify_via: HTTP or UI and the diff's tests never import a test client or call a route/element for it"   # mechanical: loop.md check (c); for UI criteria check (d) applies instead
 budgets: { max_iterations: 8, max_verify_rounds: 3, max_tokens: 400000, wall_clock: "2h" }
 model_routing: { implementer: "haiku", verifier: "opus", planner: "opus" }
-state: "agent:in-progress"   # 2026-09-20: implementer dispatched on impl/18-login-ui, PR #29 opened draft. verify/18-login-ui scaffolded alongside it.
+state: "agent:gate-pending"   # 2026-09-20T17:25Z: region-boundary fix + check (d) level-3 browser evidence done, verify/18-login-ui synced to impl (b1a5856), verifier round 1 dispatched.
 branches: { impl: "impl/18-login-ui", verify: "verify/18-login-ui" }
 ---
 ## Context (progressive disclosure — links, not inlined bodies)
