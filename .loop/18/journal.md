@@ -115,3 +115,34 @@ region, immediately after the submit-handler's `addEventListener` call. No other
 the 6-line relocation (3 removed, 3 added, identical content) — confirmed nothing else moved
 or changed. Full suite re-run: 143/143 green. Pushed `c016d9c` to `origin/impl/18-login-ui`,
 confirmed via `git ls-remote` matching local HEAD.
+
+## Orchestrator — check (d) level 3, real browser evidence — 2026-09-20T17:20:00Z
+
+No JS test harness in this repo, so per loop.md check (d) all four UI criteria need real
+execution evidence beyond the static grep + pytest contract tests already in
+`tests/test_login_ui.py`. Ran `flp-test-instance` (port 8099) against this worktree's own
+code (`c016d9c`) and venv — the main checkout's shared root `.venv` is still missing
+`authlib` (same pre-existing gap #12 hit), routed around it by pointing the launch config's
+`flp-test-instance` entry at this worktree's own `.venv/bin/python` with an explicit `cd`,
+temporarily, not committed, reverted after the run.
+
+Results (posted in full to PR #29 as "orchestrator browser evidence (check (d) level 3)"):
+- Criterion 1: logged out, reloaded — login overlay renders with email/password fields.
+- Criterion 3: real form submit (`dispatchEvent('submit')`) with a wrong password against a
+  real signed-up account → `{"afterLoginCalls":0,"errorVisible":true,"errorText":"invalid
+  email or password","overlayShown":true}`. `afterLogin` was wrapped to count real calls
+  before this ran.
+- Criterion 2: real form submit with correct credentials →
+  `{"afterLoginCalls":1,"overlayShown":false,"callOrder":["fetch:/login","afterLogin",
+  "fetch:/threads/sync","fetch:/me","fetch:/threads","fetch:/threads/3550"]}` — exactly one
+  call, correctly ordered after `/login` and before #12's own sync/hydrate calls (confirms
+  #18 doesn't duplicate or reorder #12's internals, a cross-check neither ticket's own tests
+  alone would catch).
+- Criterion 4: full page navigation (real reload, real cookie, no carried-over JS state) —
+  screenshot shows the normal app UI with no login overlay.
+
+Test instance stopped and confirmed down. `.claude/launch.json` reverted to its committed
+state (`git checkout -- .claude/launch.json` on the main checkout) — confirmed clean.
+
+All four UI criteria and the region-boundary fix are done. Re-syncing `verify/18-login-ui`
+to this branch's tip next, then dispatching the verifier (round 1 of `max_verify_rounds: 3`).
