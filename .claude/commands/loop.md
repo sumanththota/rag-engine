@@ -87,7 +87,10 @@ Run once, then exit (a fresh context restarts you next tick).
               Stop the instance afterwards.
          All three, not the first one alone. This repo has no JS test harness at all —
          that gap itself is a standing item, not something to route around silently.
-     Then spawn VERIFIER (strong model, on verify/<id>-*, Write and Edit disallowed). Run verifier_command. The VERIFIER posts its own raw
+     Then spawn VERIFIER (sonnet — verifier.md's default; sonnet is also the default for
+     any planning/manifest-authoring work the orchestrator itself does, e.g. writing a new
+     ticket's LOOP.md — record `planner: "sonnet"` in that ticket's model_routing, same as
+     verifier) on verify/<id>-*, Write and Edit disallowed. Run verifier_command. The VERIFIER posts its own raw
      verdict to the PR with gh — you must not relay it, since you only receive its summary
      and relaying would paraphrase the thing that gates the merge.
      PASS -> label agent:verified, mark PR ready. NEEDS_WORK -> label agent:in-progress.
