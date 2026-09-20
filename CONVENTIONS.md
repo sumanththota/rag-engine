@@ -119,6 +119,15 @@ tokens via SSE).
   `python -m venv .venv && .venv/bin/pip install -e ".[dev]"` (same as the
   README's main setup). `pytest -q` should be green on that freshly-built
   venv before the agent starts its own work.
+  CHECK (found live on #12, orchestrator-created verifier worktree,
+  2026-09-20): `.worktreeinclude`'s `.env` copy is NOT automatic for a
+  worktree made with a plain `git worktree add` — no `WorktreeCreate` hook
+  exists in this repo, and there is no other mechanism that runs it, so a
+  worktree the orchestrator creates directly (rather than one an isolated
+  subagent spawn creates for itself) starts with neither `.env` nor a venv.
+  Copy `.env` and rebuild the venv by hand in every orchestrator-created
+  worktree before handing it to an agent or running tests in it yourself —
+  do not assume `.worktreeinclude` fired just because it's declared.
 - `pyproject.toml` now has a `[build-system]` table and `[tool.setuptools]`
   packages config (added during ticket #11, approved by a human — see
   `.loop/11/journal.md`). The `PYTHONPATH=.` workaround noted in earlier

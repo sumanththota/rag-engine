@@ -29,7 +29,7 @@ escalation_triggers:
   - "a criterion names verify_via: HTTP or UI and the diff's tests never import a test client or call a route/element for it"   # mechanical: loop.md check (c); for UI criteria check (d) applies instead
 budgets: { max_iterations: 8, max_verify_rounds: 3, max_tokens: 400000, wall_clock: "2h" }
 model_routing: { implementer: "haiku", verifier: "opus", planner: "opus" }
-state: "not-ready"   # no ready-for-agent label on purpose: depends_on ["12"] is unmerged, and #12's criterion 3 is itself BLOCKED-ON-18. Do NOT label until #12 is merged.
+state: "ready-for-agent"   # 2026-09-20: #12 merged (5860f7c) and #9 already merged — both depends_on satisfied. This ticket's criterion 2 (submit calls afterLogin() on success) is what closes #12's own BLOCKED-ON-18 carve-out; that's the correct order, do not re-derive afterLogin() here.
 branches: { impl: "impl/18-login-ui", verify: "verify/18-login-ui" }
 ---
 ## Context (progressive disclosure — links, not inlined bodies)
