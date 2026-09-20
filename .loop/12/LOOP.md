@@ -86,7 +86,7 @@ isolation:
     - "app/templates/index.html"             # only inside `// region: after-login (#12)` / `// endregion`
     - "tests/test_threads.py"
     - ".loop/12/journal.md"
-state: "ready-for-agent"   # depends_on ["11"] is merged; GitHub label set alongside this file
+state: "agent:gate-pending"   # round 4 self-tests green (2026-09-20T15:55Z), orchestrator-verified independently, not just implementer-claimed; GitHub label set alongside this file. NOTE: this field went stale for rounds 1-4 (left at "ready-for-agent" the whole time) — the GitHub label was the only accurate signal; keep this field in sync going forward.
 branches: { impl: "impl/12-thread-sync", verify: "verify/12-thread-sync" }
 ---
 ## Context (progressive disclosure — links, not inlined bodies)
