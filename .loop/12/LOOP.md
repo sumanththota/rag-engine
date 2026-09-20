@@ -86,7 +86,7 @@ isolation:
     - "app/templates/index.html"             # only inside `// region: after-login (#12)` / `// endregion`
     - "tests/test_threads.py"
     - ".loop/12/journal.md"
-state: "agent:verified"   # verifier round 3/3 PASSED 2026-09-20T16:35Z (raw verdict on PR #26); criterion 3 correctly reported BLOCKED-ON-18 (unmet, carve-out). NOT merged: reaching agent:verified with a BLOCKED-ON-<id> criterion still open is a stop-and-report for a human per loop.md, never an automatic merge. GitHub label set alongside this file.
+state: "merged"   # PR #26 merged 2026-09-20 (commit 5860f7c). Criterion 3's BLOCKED-ON-18 carve-out resolved 2026-09-20T17:41Z when #18 merged (commit ed9f6cd) — #18's own verified criterion 2 (submit calls afterLogin() on success) closes the loop this ticket left open. Retro: .loop/12/retro.md.
 branches: { impl: "impl/12-thread-sync", verify: "verify/12-thread-sync" }
 ---
 ## Context (progressive disclosure — links, not inlined bodies)
