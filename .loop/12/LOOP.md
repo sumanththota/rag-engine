@@ -71,7 +71,10 @@ escalation_triggers:
   - "any code path in /threads/sync that reads a user id from the request body or query string instead of the session-derived current user"   # closes ORCHESTRATOR-ADDED criterion 5 specifically
   - "any code in this diff that DEFINES the login submit flow, or builds login-form UI"   # #18 owns that; this ticket only defines afterLogin() itself
 budgets: { max_iterations: 8, max_verify_rounds: 3, max_tokens: 400000, wall_clock: "2h" }
-model_routing: { implementer: "haiku", verifier: "opus", planner: "opus" }
+model_routing: { implementer: "haiku", verifier: "sonnet", planner: "sonnet" }
+# verifier/planner changed opus -> sonnet 2026-09-20 (user request, standing default in
+# verifier.md + loop.md, not a per-ticket override). Rounds 1-2's verifiers ran on opus
+# per the default at the time — this only affects verifier rounds from here on.
 isolation:
   worktree: true          # CHECKED at spawn via `git worktree list`
   venv_rebuilt: true       # CHECKED — pyvenv.cfg path must match the worktree, never copied
