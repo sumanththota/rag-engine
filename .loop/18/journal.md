@@ -170,3 +170,85 @@ requires all three levels, and the automated levels 1/2 don't cover it.
 
 Relabeled `agent:in-progress`. Dispatching a fix-round implementer scoped strictly to
 `tests/test_login_ui.py` — no production code change is in question.
+
+## Fix Round 2: test_18_index_html_failure_branch_no_afterlogin
+
+**Start time:** 2026-09-20 16:32 UTC
+**End time:** 2026-09-20 16:47 UTC
+
+### Problem Fixed
+Test `test_18_index_html_failure_branch_no_afterlogin` (lines 239-273) had all meaningful
+assertions gated behind `if if_resp_ok_match:` with no `else` clause that fails, violating
+CONVENTIONS.md §7. If regex extraction failed (e.g., due to code mutation), the test would
+PASS with zero assertions run. Additionally, no assertion verified that the 401 failure branch
+actually calls `showLoginError()` to display the error to users.
+
+### Changes Applied
+**File:** `tests/test_login_ui.py`, lines 239-280
+
+1. **Extraction failure → hard failure:** Replaced `if if_resp_ok_match:` (line 258) with
+   `assert if_resp_ok_match is not None, "could not locate the if (resp.ok) success block in the login-ui region"`
+
+2. **Unconditional assertions:** Unindented all assertions previously nested inside the if
+   block; they now run unconditionally after the assert succeeds
+
+3. **New error-handling assertion:** Added pattern check for the complete if-else-error
+   structure: `r'if\s*\(\s*resp\.ok\s*\)\s*\{[^}]*\}\s*else\s*\{.*?showLoginError\s*\('`
+   This ensures the failure branch calls `showLoginError()` to show error messages
+
+### RED/GREEN Mutation Verification
+
+**GREEN (Real code):**
+```
+✓ Real code: ALL ASSERTIONS PASSED
+```
+
+**RED (Three mutation scenarios caught as failures):**
+
+1. **Mutation 1:** Restructure if block to break regex
+   - Change: `if (resp.ok) {` → `if ( resp . ok ) {`
+   - Caught by: "could not locate the if (resp.ok) success block" ✗
+
+2. **Mutation 2:** Call afterLogin() in failure branch (CRITICAL BUG)
+   - Change: Add `window.afterLogin();` inside else block
+   - Caught by: "window.afterLogin() appears N times, expected exactly 1" ✗
+
+3. **Mutation 3:** Separate if-else (insert code between them)
+   - Change: Move else to later in code (break if-else bond)
+   - Caught by: "if (resp.ok) {...} else {...showLoginError(...)} structure not found" ✗
+
+**Verification Results:**
+```
+VERIFICATION SUMMARY
+======================================================================
+GREEN (real code passes):                    True
+RED Mutation 1 (breaks regex):               True
+RED Mutation 2 (afterLogin on failure):      True
+RED Mutation 3 (broken if-else bond):        True
+
+✓ FIX IS COMPLETE - catches all mutations
+```
+
+### Full Test Suite Result (143/143)
+```
+........................................................................ [ 50%]
+.......................................................................  [100%]
+=============================== warnings summary ===============================
+tests/test_auth.py::test_signup_then_duplicate_signup_conflicts
+  /Users/sumanththota/Dev/AI/Agents loops/RAG/rag-migration/rag-engine/.claude/worktrees/agent-ad0ea4916ef20fa72/.venv/lib/python3.14/site-packages/authlib/integrations/httpx_client/assertion_client.py:5: AuthlibDeprecationWarning: The httpx module is deprecated; please use httpx2 instead.
+    from ._compat import httpx2
+
+-- Docs: https://docs.pytest.org/en/stable/how-to-capture-warnings.html
+143 passed, 1 warning in 5.98s
+```
+
+### Compliance Summary
+- ✓ Only `tests/test_login_ui.py` modified (owned region)
+- ✓ Only `test_18_index_html_failure_branch_no_afterlogin` function touched
+- ✓ No production code changed (index.html, main.py, threads.py untouched)
+- ✓ Extraction failure is a hard failure (assert, not silent skip)
+- ✓ All assertions run unconditionally
+- ✓ New assertion verifies failure branch shows error via showLoginError()
+- ✓ Three mutation types that would cause real failures are all caught
+- ✓ Full suite (143 tests) passes
+- ✓ Test passes green when run alone: `pytest -q tests/test_login_ui.py::test_18_index_html_failure_branch_no_afterlogin` → PASSED

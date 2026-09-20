@@ -247,30 +247,39 @@ def test_18_index_html_failure_branch_no_afterlogin():
 
     region_text = login_region.group(0)
 
-    # Extract the else branch (failure case) from the if (resp.ok) structure
-    # This is a heuristic: find the if resp.ok block and check what follows
+    # Extract the if (resp.ok) success branch; extraction failure is a hard failure
     if_resp_ok_match = re.search(
         r'if\s*\(\s*resp\.ok\s*\)\s*\{[^}]*\}',
         region_text,
         re.DOTALL
     )
+    assert if_resp_ok_match is not None, \
+        "could not locate the if (resp.ok) success block in the login-ui region"
 
-    if if_resp_ok_match:
-        if_block = if_resp_ok_match.group(0)
-        # afterLogin should be in this if block
-        assert "window.afterLogin()" in if_block, \
-            "window.afterLogin() not in the if (resp.ok) success block"
+    if_block = if_resp_ok_match.group(0)
+    # afterLogin should be in this if block
+    assert "window.afterLogin()" in if_block, \
+        "window.afterLogin() not in the if (resp.ok) success block"
 
-        # Find everything after the if block to check for else or error handling
-        after_if_index = if_resp_ok_match.end()
-        after_if_text = region_text[after_if_index:]
+    # The failure/error handling should NOT call afterLogin.
+    # Verify afterLogin only appears exactly once in the entire handler,
+    # and it's in the success branch
+    afterlogin_count = region_text.count("window.afterLogin()")
+    assert afterlogin_count == 1, \
+        f"window.afterLogin() appears {afterlogin_count} times, expected exactly 1"
 
-        # The failure/error handling should NOT call afterLogin
-        # (This is a weaker check: just verify afterLogin only appears once
-        # in the entire handler, and it's in the success branch)
-        afterlogin_count = region_text.count("window.afterLogin()")
-        assert afterlogin_count == 1, \
-            f"window.afterLogin() appears {afterlogin_count} times, expected exactly 1"
+    # Criterion 3 part 2: A failed login must show an error message.
+    # The else/failure branch (immediately after if resp.ok) must call showLoginError().
+    # Verify the pattern: if (resp.ok) { ... } else { ... showLoginError ... }
+    success_to_else_pattern = r'if\s*\(\s*resp\.ok\s*\)\s*\{[^}]*\}\s*else\s*\{.*?showLoginError\s*\('
+    failure_shows_error = re.search(
+        success_to_else_pattern,
+        region_text,
+        re.DOTALL
+    )
+    assert failure_shows_error is not None, \
+        "if (resp.ok) {...} else {...showLoginError(...)} structure not found; " \
+        "failure branch must call showLoginError(...) to display error on failed login"
 
 
 # ---- Criterion 4: Form hidden when logged in (grep check) --------------------
