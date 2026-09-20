@@ -1300,9 +1300,14 @@ def test_get_thread_orders_messages_with_id_tiebreaker():
     import inspect
     from app.threads import ThreadStore
     source = inspect.getsource(ThreadStore.get_thread)
-    assert "ORDER BY created_at ASC, id ASC" in source, (
-        "get_thread's message query must break created_at ties with id ASC as a "
-        "secondary sort key — see HAZARD 2 in .loop/12/LOOP.md"
+    # Strip comments before searching — a comment naming the tiebreaker must not
+    # satisfy this check regardless of what the executed query actually says
+    # (round-2 verifier finding: this exact defect, previously fixed for the JS
+    # version of this same check in test_after_login_defined_in_index_html).
+    code_only = "\n".join(line.split("#", 1)[0] for line in source.split("\n"))
+    assert "ORDER BY created_at ASC, id ASC" in code_only, (
+        "get_thread's EXECUTED message query must break created_at ties with id ASC "
+        "as a secondary sort key — see HAZARD 2 in .loop/12/LOOP.md"
     )
 
 
@@ -1391,7 +1396,29 @@ async def test_sync_threads_respects_ownership():
             data_a = detail_a.json()
             assert data_a["title"] == "User A's Thread (spoofed title)"
 
-        # ---- Verify B's thread was NOT touched ----
+            # Attempt to spoof ownership via an extra client-supplied field — the route must
+            # ignore it and always use the session-derived user (mutation_target: user_id
+            # sourced from _get_current_user_optional, never the request body). Verifier
+            # round 1 finding: without this, a mutation reading a body-supplied user_id
+            # survives, because no existing test ever sends one.
+            spoofed_thread = {
+                "client_thread_id": "spoof-attempt-1",
+                "title": "Spoofed Thread",
+                "user_id": user_b_id,  # attacker-controlled field; must be ignored
+                "messages": [{"role": "user", "content": "spoof attempt"}],
+            }
+            spoof_resp = await client_a.post("/threads/sync", json=[spoofed_thread])
+            assert spoof_resp.status_code == 200
+            spoofed_id = spoof_resp.json()[0]["id"]
+
+            # Must land in user A's own list (the session that actually made the request),
+            # never in user B's — regardless of the spoofed user_id field in the payload.
+            list_a = await client_a.get("/threads")
+            assert any(t["id"] == spoofed_id for t in list_a.json()), (
+                "spoofed thread did not appear in the session user's own list"
+            )
+
+        # ---- Verify B's thread was NOT touched and spoofed thread is NOT in B's list ----
         async with _async_client(app) as client_b_check:
             # Re-login as B
             await client_b_check.post("/login", json={"email": email_b, "password": "test123"})
@@ -1412,6 +1439,14 @@ async def test_sync_threads_respects_ownership():
             )
             assert data_b_after["messages"][0]["content"] == "B's secret message", (
                 f"B's message content was altered: {data_b_after['messages'][0]['content']}"
+            )
+
+            # The spoofed thread (created by A with user_id=B in payload) must NOT
+            # appear in B's list, proving A's spoofed user_id field was ignored
+            list_b = await client_b_check.get("/threads")
+            assert not any(t["id"] == spoofed_id for t in list_b.json()), (
+                "spoofed thread (created by A with spoofed user_id) appeared in B's list; "
+                "route must have ignored the user_id field and used the session user instead"
             )
     finally:
         await _cleanup(pool, email_a, email_b)
