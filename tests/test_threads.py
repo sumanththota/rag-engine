@@ -1173,11 +1173,21 @@ def test_after_login_defined_in_index_html():
         "hydratThreadsFromServer not called in afterLogin"
     )
 
-    # Verify sync comes BEFORE hydrate (sync-then-hydrate order)
-    sync_idx = region.find("/threads/sync")
-    hydrate_idx = region.find("hydratThreadsFromServer()")
+    # Verify sync comes BEFORE hydrate (sync-then-hydrate order).
+    # Strip line comments (// ...) from the region first, so the check operates on
+    # real code, not comment text. The function's own leading comment may contain
+    # the literal substring "/threads/sync", which would satisfy the ordering
+    # assertion regardless of what the actual code does.
+    def _strip_line_comments(js: str) -> str:
+        return "\n".join(line.split("//", 1)[0] for line in js.split("\n"))
+
+    code_only = _strip_line_comments(region)
+    sync_idx = code_only.find("/threads/sync")
+    hydrate_idx = code_only.find("hydratThreadsFromServer()")
+    assert sync_idx != -1, "no real (non-comment) reference to /threads/sync in the region"
+    assert hydrate_idx != -1, "no real (non-comment) call to hydratThreadsFromServer() in the region"
     assert sync_idx < hydrate_idx, (
-        "hydratThreadsFromServer called BEFORE /threads/sync (wrong order); "
+        "hydratThreadsFromServer called BEFORE /threads/sync in actual code (ignoring comments); "
         f"sync at {sync_idx}, hydrate at {hydrate_idx}"
     )
 
@@ -1275,6 +1285,25 @@ async def test_sync_threads_preserves_order_and_content():
                         assert src["text"] == original_src["text"]
     finally:
         await _cleanup(pool, email)
+
+
+def test_get_thread_orders_messages_with_id_tiebreaker():
+    """Criterion 4 / HAZARD 2: Postgres does not guarantee any particular order for
+    rows with identical created_at values without an explicit secondary sort key.
+    A same-transaction batch insert (e.g. from sync_threads) gives every message an
+    identical created_at (Postgres now() is fixed per transaction), so without this
+    tiebreaker, message order becomes Postgres's undefined tie-break behavior, not
+    the submitted order. A behavioral HTTP test cannot reliably distinguish this from
+    a correct-by-coincidence result on a small, uncontended table (verified live:
+    the behavioral test alone stayed green 3/3 runs with this tiebreaker removed) —
+    assert directly on the query text instead."""
+    import inspect
+    from app.threads import ThreadStore
+    source = inspect.getsource(ThreadStore.get_thread)
+    assert "ORDER BY created_at ASC, id ASC" in source, (
+        "get_thread's message query must break created_at ties with id ASC as a "
+        "secondary sort key — see HAZARD 2 in .loop/12/LOOP.md"
+    )
 
 
 # ---- Criterion 5: Ownership/access control (attacker perspective) ----
