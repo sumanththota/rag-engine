@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     app_env: str = Field(default="production", alias="APP_ENV")
     secret_key: str = Field(alias="SECRET_KEY")
 
+    google_client_id: str = Field(default="", alias="GOOGLE_CLIENT_ID")
+    google_client_secret: str = Field(default="", alias="GOOGLE_CLIENT_SECRET")
+    google_redirect_uri: str = Field(default="", alias="GOOGLE_REDIRECT_URI")
+
     @field_validator("secret_key")
     @classmethod
     def _require_secret_key(cls, v: str) -> str:
