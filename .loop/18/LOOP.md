@@ -29,7 +29,7 @@ escalation_triggers:
   - "a criterion names verify_via: HTTP or UI and the diff's tests never import a test client or call a route/element for it"   # mechanical: loop.md check (c); for UI criteria check (d) applies instead
 budgets: { max_iterations: 8, max_verify_rounds: 3, max_tokens: 400000, wall_clock: "2h" }
 model_routing: { implementer: "haiku", verifier: "opus", planner: "opus" }
-state: "agent:gate-pending"   # 2026-09-20T18:10Z: fix round 2 (hollow-assertion + errMsg-specificity) done, verify/18-login-ui synced (6b8a8ec), verifier round 2 dispatched.
+state: "agent:verified"   # verifier round 2/2 PASSED 2026-09-20T18:25Z (raw verdict on PR #29). No BLOCKED-ON carve-out on this ticket. PR marked ready; awaiting human merge (merge action requires explicit approval per this session's permission policy).
 branches: { impl: "impl/18-login-ui", verify: "verify/18-login-ui" }
 ---
 ## Context (progressive disclosure — links, not inlined bodies)
