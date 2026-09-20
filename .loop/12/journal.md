@@ -756,3 +756,55 @@ only thing wrong):
   re-confirm after pushing this repair commit, per the standing "verify every push" rule.
 
 Re-running the full suite and both named mutations myself before labeling `agent:gate-pending`.
+
+## Orchestrator — gate-pending pre-checks, round 3 verifier dispatched — 2026-09-20T16:10:00Z
+
+Ran loop.md's four gate-pending pre-checks fresh this tick (not trusting that a pass two
+rounds ago still holds):
+
+- **(a) region diff:** `git diff --name-only master...impl/12-thread-sync` →
+  `.loop/12/LOOP.md`, `.loop/12/journal.md`, `app/main.py`, `app/templates/index.html`,
+  `app/threads.py`, `tests/test_threads.py`. Confirmed `app/main.py`'s only hunk is inside
+  `# region: threads-sync (#12)` / `# endregion: threads-sync`, and `index.html`'s only hunk
+  is inside `// region: after-login (#12)` / `// endregion: after-login`. No out-of-region
+  edits. Mutation count: all 5 named `mutation_target`s independently re-verified holding as
+  of round 3's re-check entry above; round 4 replaced criteria 3 & 4's tests with real-
+  execution/real-MVCC versions and re-confirmed both red-on-mutation/green-on-fix. PASS.
+- **(b) branch sync:** found `verify/12-thread-sync` stale at `fee66f1` (the round-3
+  checkpoint) while `impl/12-thread-sync` (local and origin, matching) had moved to `0b70822`
+  after round 4 + the journal repair — three commits the verify branch never saw. The old
+  verify worktree (`agent-aebd3f418bfa86d0f`) was clean, so removed it, force-updated
+  `verify/12-thread-sync` to `impl/12-thread-sync`'s tip, and pushed
+  (`fee66f1..0b70822 verify/12-thread-sync -> verify/12-thread-sync`). `git ls-remote`
+  reconfirmed origin/impl and origin/verify both at `0b70822`. PASS (after fix).
+- **(c) verify_via HTTP coverage:** grepped `tests/test_threads.py` — criteria 1/2/4/5 each
+  have a dedicated `async def test_sync_...` calling `client.post("/threads/sync", ...)`
+  through a real test client, not `ThreadStore` directly. Criterion 3 has both the real
+  node-execution order test and an HTTP-level `/threads/sync` call inside the shared
+  fixtures. PASS.
+- **(d) UI evidence, criterion 3 (BLOCKED-ON-18 carve-out, no JS harness in this repo):**
+  level 1 (static/real-execution) — round 4's `test_after_login_real_execution_order` runs
+  the actual `afterLogin()` region via `node -e` with mocked fetch/hydrate and asserts
+  observed call order (strictly stronger than the grep this criterion originally asked for).
+  Level 2 (pytest proving the API contract) — criterion 1's sync test. Level 3 (manual check,
+  pasted output) — already on PR #26 as "orchestrator browser evidence (check (d) level 3)",
+  posted a prior round: real `flp-test-instance` run, real network call order captured
+  (`/threads/sync` before `/me`→`/threads`→`/threads/{id}`), real server-side thread content
+  confirmed matching. All three present. PASS.
+
+New verifier worktree `.claude/worktrees/verify-12-r3` created on `verify/12-thread-sync`
+(`0b70822`). Isolation preflight: venv rebuilt fresh in-place (`pyvenv.cfg` home points at
+this worktree's own path, not copied), `.env` copied in manually (`.worktreeinclude` lists
+`.env` but plain `git worktree add` doesn't run it — no WorktreeCreate hook exists in this
+repo yet, a gap worth a RETRO-CANDIDATE line: isolation preflight's `.env`/venv steps are not
+actually automatic here and must be done by hand every worktree). Smoke-tested before handing
+to the verifier: `pytest -q tests/test_threads.py` → 16/16 green in the fresh worktree,
+matching the implementer's and the round-3/round-4 orchestrator re-checks.
+
+This is verifier round 3 of `max_verify_rounds: 3` (rounds 1 and 2 both returned NEEDS_WORK /
+STOP against the now-replaced hollow criterion-3/4 checks) — the last round this budget
+allows. If round 3 also returns NEEDS_WORK, the next step is STOP for a human per loop.md
+step 8, not a fourth round. Dispatching VERIFIER now (model: sonnet per this ticket's
+`model_routing`, read-only, Write/Edit disallowed) on `verify/12-thread-sync` in the fresh
+worktree, running `verifier_command: pytest -q tests/test_threads.py` plus the seven
+per-criterion checks from verifier.md. It will post its raw verdict to PR #26 directly.
