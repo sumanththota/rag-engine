@@ -43,7 +43,14 @@ Run once, then exit (a fresh context restarts you next tick).
          owned regions named in LOOP.md. An out-of-region edit is an escalation trigger,
          not something the implementer may justify in the journal and carry on from.
          If you approve one, record the approval in the journal — an approved escalation
-         and a skipped one look identical afterwards.
+         and a skipped one look identical afterwards. NEVER trust the implementer's own
+         "no edits outside owned regions" line in its report — it has been FALSE 3 times
+         across 2 tickets (#10, #12), always caught only by this diff, never by the
+         report. The diff is the only thing that counts, unconditionally, every round.
+         Same rule for mutation counts: count what the report actually shows against
+         what LOOP.md requires. Fewer than required is an automatic block, same
+         severity as an out-of-region edit, not a note to proceed past — this has
+         already cost one ticket a full extra round (#10) and nearly cost a second (#12).
      (b) `git fetch origin`, then compare `origin/impl/<id>-*`, local `impl/<id>-*`,
          and `verify/<id>-*` — all three must be the SAME sha before you spawn anything.
          Do not trust a local ref alone and do not trust an agent's claim of "pushed."
