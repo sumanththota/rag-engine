@@ -32,7 +32,7 @@ escalation_triggers:
   - "a criterion names verify_via: HTTP or UI and the diff's tests never import a test client or call a route/element for it"   # mechanical: loop.md check (c)
 budgets: { max_iterations: 8, max_verify_rounds: 3, max_tokens: 400000, wall_clock: "2h" }
 model_routing: { implementer: "haiku", verifier: "opus", planner: "opus" }
-state: "agent:in-progress"   # 2026-09-20: unblocked — human approved the two client_id serializer lines; rework pass resumed. Criterion 3 stays BLOCKED on #18.
+state: "agent:blocked"   # 2026-09-20: rework pass #2 (87d3d3b) gated — checks (a)-(c) pass, but independent mutation re-verification found the transaction test doesn't test the transaction and the P6 test doesn't test P6 (see journal). Criterion 3 stays BLOCKED on #18.
 branches: { impl: "impl/12-sync-threads-login", verify: "verify/12-sync-threads-login" }
 ---
 ## Context (progressive disclosure — links, not inlined bodies)
