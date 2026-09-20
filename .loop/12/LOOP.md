@@ -58,7 +58,11 @@ acceptance_criteria:   # 1-4 copied from the issue body (4 reworded — see HAZA
     output_shape: "none"
     assertion_depth: false
     mutation_target: "none"
-verifier_command: "pytest -q tests/test_threads.py -k sync"
+verifier_command: "pytest -q tests/test_threads.py"   # was "-k sync" — orchestrator correction 2026-09-20: the verifier
+                                                        # found this filter silently excluded test_after_login_defined_in_index_html
+                                                        # and test_get_thread_orders_messages_with_id_tiebreaker (neither name contains
+                                                        # "sync"), so criteria 3 and 4's only real guards never ran under this command.
+                                                        # Run the whole file instead — no filter to accidentally exclude a criterion's test.
 escalation_triggers:
   - "schema/migration touches an existing table, OTHER than the pre-authorized `client_thread_id` column + partial unique index on `threads` described in Context below"
   - "the SAME criterion fails in 3 separate verify rounds"
