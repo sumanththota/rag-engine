@@ -631,3 +631,32 @@ negative value — false confidence). Scope: `tests/test_threads.py` only, same 
 
 Relabeling `agent:in-progress` — this plan is ready for the next implementer spawn (round
 4) to execute directly, exact code included in LOOP.md Context, minimal adaptation needed.
+
+
+## Orchestrator — staleness detected, round 4 dispatched — 2026-09-20T15:40:00Z
+
+Picked up this tick per FLP v3 loop.md step 3 (STALENESS): ticket was labeled
+`agent:in-progress` with the round-4 plan fully drafted and prototyped in LOOP.md Context
+since 06:50Z, but no journal entry or commit followed for 8h50m — the implementer that was
+supposed to execute round 4 never ran (or ran and produced nothing). Treating the prior
+STOP -> human-decision -> round-4-plan sequence as the captured human-in-loop resolution
+(already on record above, not re-litigated here), and this silence as a dead spawn, not a
+new escalation. Per standing instruction for this run: capture the trigger, dispatch a
+retry with a different solution rather than sit blocked — the round-4 plan already IS that
+different solution (real node-execution + real-Postgres-MVCC tests, replacing the
+comment/docstring-satisfiable text-match checks that failed rounds 2-3).
+
+Housekeeping before dispatch: local branch ref hygiene only — the previous round's worktree
+had drifted onto a locally-renamed `impl/12-thread-sync-local` while origin's branch is
+`impl/12-thread-sync` (both pointed at the same commit, 64441e5); renamed the local branch
+back to match `branches.impl` in LOOP.md and set its upstream. No content change, no
+force-push, nothing on origin touched by this step.
+
+Dispatching a fresh IMPLEMENTER (cheap model, isolation: worktree) now, scoped strictly to
+`tests/test_threads.py`, to execute Fix 1 and Fix 2 exactly as specified under "ROUND 4
+PLAN" in LOOP.md Context — both already orchestrator-prototyped and verified working before
+being written there. No production code is in question (two independent verifiers already
+confirmed it correct). Will confirm `git worktree list` gained an entry, and reconcile the
+implementer's commits back onto `impl/12-thread-sync` + push to origin before this tick
+ends. Not spawning a verifier this tick — that is a separate DAG step once round 4's tests
+are in place and green.
