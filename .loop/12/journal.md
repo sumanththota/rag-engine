@@ -605,3 +605,29 @@ Labeling `agent:blocked`. Options for the human, not decided here:
    real but bounded risk, not a sign anything is broken today.
 
 Not choosing between these — that judgment is exactly what escalation to a human is for.
+
+## Orchestrator — human decision + ROUND 4 PLAN — 2026-09-20T06:50:00Z
+
+Human chose option 2 (invest in a real fix) over 1/3 (respec/accept), reassessed cheaper
+than first estimated: `node` is available in this dev environment with no npm project
+needed, so a real-execution test for criterion 3 is a single self-contained test function,
+not a "JS harness" scope-creep item. Full plan, both replacement tests already prototyped
+and verified working by the orchestrator (not theoretical), written into `.loop/12/LOOP.md`
+Context under "ROUND 4 PLAN":
+- Criterion 3: `test_after_login_real_execution_order` — runs the REAL afterLogin() JS via
+  `node -e` with mocked fetch/hydrate, asserts on observed call order. Verified: correct
+  code → `["fetch:/threads/sync","hydrate"]`, passes; swapped order → `["hydrate","fetch:..."]`,
+  fails. Immune to the comment/docstring class of defect by construction — node discards
+  comments before executing, there's no text position to game.
+- Criterion 4: replaces the source-text check with a test that forces a REAL Postgres MVCC
+  divergence (UPDATE-after-insert writes the updated row to the end of the heap). Verified
+  empirically against this repo's DB: without the `id ASC` tiebreaker, order comes back
+  `[later_id, earlier_id]` (wrong); with it, `[earlier_id, later_id]` (correct, matches
+  submission order). Deterministic, not incidental.
+
+Both old hollow checks are to be DELETED, not kept alongside the replacements (they provide
+negative value — false confidence). Scope: `tests/test_threads.py` only, same as rounds 2-3
+— production code is not in question, two independent verifiers already confirmed it.
+
+Relabeling `agent:in-progress` — this plan is ready for the next implementer spawn (round
+4) to execute directly, exact code included in LOOP.md Context, minimal adaptation needed.

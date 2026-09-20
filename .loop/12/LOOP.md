@@ -27,13 +27,13 @@ acceptance_criteria:   # 1-4 copied from the issue body (4 reworded — see HAZA
     assertion_depth: true
     mutation_target: "the (user_id, client_thread_id) partial unique index / ON CONFLICT target on `threads` — drop it and confirm this test goes red (a second row created)"
   - text: "BLOCKED-ON-18 — Client calls this endpoint automatically right after login succeeds"
-    verify_via: "UI — check (d), carve-out per .loop/18/LOOP.md: #18 owns the login form/submit handler that IS the login-success trigger; it doesn't exist yet. This ticket's evidence ceiling is (1) grep confirming `window.afterLogin` is defined in index.html and calls fetch('/threads/sync', ...) BEFORE calling hydratThreadsFromServer() (sync THEN hydrate, never reversed — see readiness note carried from the issue); (2) pytest asserting /threads/sync behaves correctly when called (criteria 1/2/4 cover this); (3) orchestrator browser evidence: with a session cookie set manually (no form yet), invoke `window.afterLogin()` from the console and paste the resulting network calls (POST /threads/sync, then GET /threads) into the PR. The 'automatically, right after a real login submit' half of this criterion is EXCLUDED from this ticket's PASS and is re-checked by #18 once its submit handler exists and calls this same function — do not attempt to build a login form here to close it fully; that is #18's owned region."
+    verify_via: "UI — check (d), carve-out per .loop/18/LOOP.md: #18 owns the login form/submit handler that IS the login-success trigger; it doesn't exist yet. ROUND 4 (see 'ROUND 4 PLAN' in Context below): the grep-level check is REPLACED by a real Node-execution test — `test_after_login_real_execution_order` — that actually runs the afterLogin() JS in `node` with a mocked fetch/hydrate and asserts on the OBSERVED call order, not source text. Plus: (1) pytest asserting /threads/sync behaves correctly when called (criteria 1/2/4 cover this); (2) orchestrator browser evidence already on PR #26 (real network trace, invoked via console). The 'automatically, right after a real login submit' half of this criterion is EXCLUDED from this ticket's PASS and is re-checked by #18 once its submit handler exists and calls this same function — do not attempt to build a login form here to close it fully; that is #18's owned region."
     attacker_perspective: false
     seeds_precondition: false
     shared_surface: "none"
     output_shape: "none"
     assertion_depth: true   # cites a specific ordering guarantee (sync before hydrate)
-    mutation_target: "the call order inside window.afterLogin() — swap hydrate before sync and confirm the ordering-sensitive test (asserting the sync fetch resolves before the /threads GET fires) goes red"
+    mutation_target: "the call order inside window.afterLogin() — swap hydrate before sync and confirm test_after_login_real_execution_order goes red (it observes ACTUAL execution order via a real node run, not text position, so no comment or dead code can satisfy it — see ROUND 4 PLAN)"
   - text: "A Thread created anonymously, then synced after login, appears identically in the server-side Thread list (title, messages, in order) as ONE thread — not duplicated across repeated syncs. (Reworded from the issue's 'same id' — see HAZARD 1: local ids are client-generated strings, server ids are bigserial integers, so literal id equality is impossible; 'same' means one server thread, content-identical, keyed by client_thread_id.)"
     verify_via: "HTTP — build a local-shaped payload (client_thread_id, title, >=3 ordered user/assistant messages with sources) submitted in one batch; POST /threads/sync, then GET /threads/{id} and assert title/messages/order match byte-for-byte, including after a second identical sync"
     attacker_perspective: false
@@ -41,7 +41,7 @@ acceptance_criteria:   # 1-4 copied from the issue body (4 reworded — see HAZA
     shared_surface: "none"
     output_shape: "none"
     assertion_depth: true
-    mutation_target: "the `id ASC` tiebreaker added to ThreadStore.get_thread's message ORDER BY (see HAZARD 2) — revert to `ORDER BY created_at ASC` alone and confirm a same-transaction multi-message sync test goes red on ordering"
+    mutation_target: "the `id ASC` tiebreaker added to ThreadStore.get_thread's message ORDER BY (see HAZARD 2). ROUND 4 (see 'ROUND 4 PLAN' in Context below): `test_get_thread_orders_messages_with_id_tiebreaker` is REPLACED by a test that forces a REAL Postgres divergence (UPDATE-after-insert MVCC trick, empirically verified by the orchestrator: without the tiebreaker, order comes back [later_id, earlier_id]; with it, [earlier_id, later_id] — deterministic, not incidental) — revert the tiebreaker and confirm THAT test goes red, not the old source-text check, which is comment/docstring-satisfiable regardless of executed code and must not be trusted again."
   - text: "ORCHESTRATOR-ADDED: /threads/sync only ever writes into the CALLER's own user_id (from the session cookie), never a client-supplied one — a crafted payload cannot target another user's threads"
     verify_via: "HTTP — as user A, POST /threads/sync with a payload that includes any user-identifying field if the route accepts one (it must not); separately, seed a real thread for user B, then have user A sync a client_thread_id that collides with user B's, and confirm user B's thread is untouched (still user B's, unchanged) and user A got a NEW thread instead"
     attacker_perspective: true
@@ -90,6 +90,146 @@ state: "ready-for-agent"   # depends_on ["11"] is merged; GitHub label set along
 branches: { impl: "impl/12-thread-sync", verify: "verify/12-thread-sync" }
 ---
 ## Context (progressive disclosure — links, not inlined bodies)
+
+- **ROUND 4 PLAN (orchestrator, 2026-09-20, after verifier round 2's NEEDS_WORK — see
+  journal "Verifier round 2" entry for the full failure history this replaces):** rounds
+  2-3 tried to fix two hollow tests by patching around comment/docstring syntax
+  (`test_after_login_defined_in_index_html`, `test_get_thread_orders_messages_with_id_tiebreaker`).
+  Verifier round 2 defeated BOTH patches on its first two attempts — proving that any check
+  built on searching SOURCE TEXT for a pattern can always be satisfied by text that isn't
+  executed (a comment, a docstring, dead code). No further patching of that approach is
+  authorized — round 4 REPLACES both tests with ones that observe REAL EXECUTION or REAL
+  DATABASE BEHAVIOR instead of text. Both replacements below were prototyped and verified
+  working by the orchestrator before being written here (not theoretical).
+
+  **Fix 1 — replace `test_after_login_defined_in_index_html`'s ordering check.** `node` is
+  available in this environment (verified: `node --version` → v26+) and this repo ships
+  browser JS with no npm project, so a lightweight subprocess-based execution test needs no
+  new dependencies or config files — it is NOT the "add a JS harness" scope-creep option,
+  it's a single self-contained test function. Extract the `// region: after-login (#12)` /
+  `// endregion: after-login` block from `index.html` (same extraction the current test
+  already does), wrap it with minimal stubs for `localStorage`, `fetch`, and
+  `hydratThreadsFromServer`, execute it for real via `node -e`, and assert on the OBSERVED
+  call order:
+  ```python
+  import subprocess, json
+
+  def test_after_login_real_execution_order():
+      """Criterion 3: executes the ACTUAL afterLogin() JS in a real node process with a
+      mocked fetch/hydrate, and asserts on the call order node actually observed — not a
+      text search. A comment or dead code cannot satisfy this: node parses and discards
+      comments before executing, so only real statement order can produce these calls.
+      Replaces the source-text version of this check (round 2/3), which the round-2
+      verifier proved comment-satisfiable regardless of executed order."""
+      with open("app/templates/index.html", encoding="utf-8") as f:
+          html = f.read()
+      start = html.index("// region: after-login (#12)")
+      end = html.index("// endregion: after-login") + len("// endregion: after-login")
+      region_js = html[start:end]
+
+      node_script = """
+  const calls = [];
+  global.localStorage = { getItem: () => JSON.stringify({version:1, threads:[{id:"x", title:"t", messages:[{role:"user",content:"hi"}]}]}) };
+  function loadState() { return JSON.parse(localStorage.getItem("x")); }
+  global.fetch = (url, opts) => { calls.push("fetch:" + url); return Promise.resolve({ok:true, json: async () => ([])}); };
+  global.hydratThreadsFromServer = async () => { calls.push("hydrate"); };
+  global.window = {};
+  """ + region_js + """
+  window.afterLogin().then(() => { console.log(JSON.stringify(calls)); }).catch(e => { console.error("ERR:" + e); process.exit(1); });
+  """
+      result = subprocess.run(
+          ["node", "-e", node_script], capture_output=True, text=True, timeout=10
+      )
+      assert result.returncode == 0, f"node execution failed: {result.stderr}"
+      calls = json.loads(result.stdout.strip())
+      sync_idx = next((i for i, c in enumerate(calls) if c.startswith("fetch:/threads/sync")), None)
+      hydrate_idx = next((i for i, c in enumerate(calls) if c == "hydrate"), None)
+      assert sync_idx is not None, f"afterLogin never called /threads/sync — calls: {calls}"
+      assert hydrate_idx is not None, f"afterLogin never called hydratThreadsFromServer — calls: {calls}"
+      assert sync_idx < hydrate_idx, (
+          f"hydrate observed BEFORE sync in actual execution — calls: {calls}"
+      )
+  ```
+  Orchestrator-verified: against the current (correct) code this prints
+  `["fetch:/threads/sync","hydrate"]` and passes; with the real call order swapped in a
+  scratch copy, it prints `["hydrate","fetch:/threads/sync"]` and the assertion fails.
+  Keep the existing region-marker/function-definition assertions from the current test (the
+  first several lines of `test_after_login_defined_in_index_html`, which check `html` for
+  the markers and `window.afterLogin` definition — those aren't hollow, only the ordering
+  check at the bottom is). Either fold this into that test or add it as a new one; either
+  way, delete the old text-position ordering check entirely — do not keep it alongside the
+  new one, it provides negative value (false confidence).
+
+  **Fix 2 — replace `test_get_thread_orders_messages_with_id_tiebreaker`.** Force a REAL
+  divergence between id-order and Postgres's physical/heap order via MVCC: `UPDATE`ing a
+  row writes its new version to the END of the heap, so a row updated AFTER a later row was
+  inserted can end up physically AFTER it despite having a lower id — exactly what
+  `ORDER BY <tied column>` alone (no tiebreaker) can return. Orchestrator-verified live
+  against this repo's Postgres: two messages forced to an identical `created_at`, then the
+  first (`m1`, lower id) updated after the second (`m2`) exists — querying
+  `ORDER BY created_at ASC` alone returned `[m2, m1]` (WRONG), `ORDER BY created_at ASC, id ASC`
+  returned `[m1, m2]` (correct). This is deterministic, not incidental — MVCC's append-only
+  heap behavior on UPDATE is documented Postgres behavior, not a hopeful assumption.
+  ```python
+  async def test_get_thread_orders_messages_with_id_tiebreaker():
+      """Criterion 4 / HAZARD 2: forces a REAL divergence between id order and Postgres's
+      physical/heap scan order (not a source-text check — round 2/3's version of this test
+      was proven comment/docstring-satisfiable regardless of the executed query). Two
+      messages get an identical created_at (simulating a same-transaction batch insert,
+      HAZARD 2's real scenario), then the earlier message is UPDATEd, which Postgres MVCC
+      writes to the END of the heap — so a scan with no id tiebreaker returns the LATER
+      message first. Orchestrator-verified empirically: without `id ASC`, order comes back
+      [later_id, earlier_id]; with it, [earlier_id, later_id]."""
+      pool = await _pool()
+      thread_store = ThreadStore(pool)
+      email = "test-12-order-tiebreak@example.com"
+      try:
+          await thread_store.ensure_schema()
+          await _cleanup(pool, email)
+          user_id = await pool.fetchval(
+              "INSERT INTO users (email) VALUES ($1) RETURNING id", email
+          )
+          thread_id = await thread_store.create_thread(user_id, title="tiebreak test")
+          async with pool.acquire() as conn:
+              m1 = await conn.fetchval(
+                  "INSERT INTO thread_messages (thread_id, role, content) VALUES ($1,'user','first') RETURNING id",
+                  thread_id,
+              )
+              m2 = await conn.fetchval(
+                  "INSERT INTO thread_messages (thread_id, role, content) VALUES ($1,'assistant','second') RETURNING id",
+                  thread_id,
+              )
+              # Force an identical created_at (HAZARD 2's real scenario: same-transaction now())
+              import datetime
+              tied_ts = datetime.datetime.now(datetime.timezone.utc)
+              await conn.execute(
+                  "UPDATE thread_messages SET created_at = $1 WHERE id = ANY($2)", tied_ts, [m1, m2]
+              )
+              # MVCC: updating m1 AFTER m2 exists writes m1's new tuple to the end of the
+              # heap, physically after m2 — the exact condition that exposes a missing tiebreaker
+              await conn.execute(
+                  "UPDATE thread_messages SET content = 'first-v2' WHERE id = $1", m1
+              )
+
+          detail = await thread_store.get_thread(thread_id, user_id)
+          assert detail is not None
+          ids_in_order = [m.id for m in detail.messages]
+          assert ids_in_order == [m1, m2], (
+              f"expected submission order [{m1}, {m2}] (id ASC tiebreaker), got {ids_in_order} "
+              "— Postgres returned physical/heap order instead, meaning the tiebreaker is "
+              "missing or ineffective"
+          )
+      finally:
+          await _cleanup(pool, email)
+  ```
+  Run 3x per verifier convention (nondeterminism itself would be a finding) — this should
+  be fully deterministic given the forced MVCC scenario, so any flake here is real signal,
+  not noise to retry past.
+
+  **Scope for round 4: `tests/test_threads.py` only**, same as rounds 2-3 — no production
+  code changes (both verifiers already confirmed it correct). Delete the two old hollow
+  checks entirely rather than leaving them alongside the new ones. Push, verify origin sync,
+  full suite green, before reporting done — same discipline as every prior round.
 
 - Cross-reference: Thread glossary entry in CONTEXT.md; CONVENTIONS.md §7 (agent-loop testing conventions, test-<id>-* fixtures).
 - Prior art this ticket extends: `app/threads.py` (`ThreadStore`, from #11) and the existing client hydrate path `hydratThreadsFromServer()` in `app/templates/index.html` (~L1377), which already replaces localStorage threads with server threads on page load for a logged-in user. This ticket adds the piece before it: uploading what's still ONLY in localStorage, then calling that same hydrate function — sync, THEN hydrate, never the reverse (a hydrate-first call would overwrite local threads with the server's old list before the upload lands).
