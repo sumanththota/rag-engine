@@ -147,10 +147,10 @@
     </p>
     <div class="stat-bar">
       <div class="stat"><span class="v">35</span><span class="l">traces read</span></div>
-      <div class="stat fail"><span class="v">14</span><span class="l">FAIL</span></div>
-      <div class="stat pass"><span class="v">21</span><span class="l">PASS</span></div>
-      <div class="stat"><span class="v">0 / 14</span><span class="l">retrieval-stage fails</span></div>
-      <div class="stat"><span class="v">14 / 14</span><span class="l">generation-stage fails</span></div>
+      <div class="stat fail"><span class="v">13</span><span class="l">FAIL</span></div>
+      <div class="stat pass"><span class="v">22</span><span class="l">PASS</span></div>
+      <div class="stat"><span class="v">0 / 13</span><span class="l">retrieval-stage fails</span></div>
+      <div class="stat"><span class="v">13 / 13</span><span class="l">generation-stage fails</span></div>
     </div>
     <p class="lede" style="font-size:.82rem">
       Revised after a manual re-read found 6 more FAILs the agent's first pass missed —
@@ -344,11 +344,11 @@
         <div class="title">Citation / page hallucination</div>
         <div class="chips">
           <span class="chip stage">generation</span>
-          <span class="chip freq">3 / 35</span>
+          <span class="chip freq">2 / 35</span>
           <span class="chip fixed">fixed — by removal</span>
         </div>
         <p class="desc">
-          <span class="mono">testrun0001, seed0012, seed0029</span> — the model cited a page
+          <span class="mono">testrun0001, seed0012</span> (seed0029 was flagged too, but the reviewer re-judged it PASS — a false positive of the agent's page-number check) — the model cited a page
           number that appeared somewhere in the retrieved text but didn't match the actual chunk's
           own <span class="mono">[Page N]</span> tag it came from. Considered a code-based grader
           (regex + set-diff, deterministic, no LLM) — but a grader only <em>detects</em> the bug, it

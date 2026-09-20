@@ -18,7 +18,35 @@ paraphrases, out-of-scope questions, ambiguous questions, no-context
 follow-ups, typos, and two prompt-injection attempts.
 
 All 35 are annotated (PASS/FAIL + note + tags) via `POST /traces/{id}/annotate`,
-visible in the `/traces` review UI. Current split: **21 PASS / 14 FAIL**.
+visible in the `/traces` review UI. Current split: **22 PASS / 13 FAIL** (after
+the reviewer re-judged `seed0029` to PASS — see theme #2). The `traces` table
+also holds ~30 unannotated rows from ticket #11's threads tests
+(`test-11-*`, "anon q", "PTO policy"); they are test residue, not eval data,
+and are excluded from every count here.
+
+## Axial-coding tags (reviewer-merged, 2026-09-19)
+
+Each FAIL carries one `theme:<name>` tag (first-thing-wrong rule), added by
+merging the reviewer's open-coding tags (`bad_refusal`→`bad-refusal`;
+`redirection-issue`→`misdirection`; `prompt-injection`/`Guardrail bypass`→
+`guardrail-bypass`; `capture-gap`→`empty-output`; tone tags folded into
+refusal/misdirection). Count them with
+`SELECT unnest(tags), count(*) FROM traces WHERE status='FAIL' GROUP BY 1`.
+
+| `theme:` tag | n | maps to below |
+|---|---|---|
+| `misdirection` | 3 | #1 (seed0017, 0018, 0021) |
+| `bad-refusal` | 2 | #1 (seed0015, 0016) |
+| `citation-hallucination` | 2 | #2 |
+| `provider-error` | 2 | #7 |
+| `empty-output` | 1 | #5 |
+| `guardrail-bypass` | 1 | #4 |
+| `hallucination` | 1 | #6 |
+| `no-multiturn-memory` | 1 | #3 |
+
+Theme #1 below (5/35) is the reviewer's `bad-refusal` + `misdirection`
+together — split because "refuses bluntly" and "fails to point to the next
+step" are different fixes, even though one prompt change addressed both.
 
 ## Themes (ranked by fix-readiness — root-caused first)
 
@@ -96,8 +124,8 @@ dev server and re-running the exact 5 failing questions plus 2 controls
   correctly still refuse, now with the more specific advisor/DGS redirect
   instead of "the relevant university office."
 
-### 2. Citation/page hallucination — **3/35 — resolved by scope removal, 2026-09-17**
-**Found by:** agent, unchanged on review.
+### 2. Citation/page hallucination — **2/35 (was 3) — resolved by scope removal, 2026-09-17**
+**Found by:** agent. On the 2026-09-19 review `seed0029` was re-judged PASS (a false positive of the agent's page-number check), leaving `testrun0001` and `seed0012`.
 
 **Resolution:** rather than trying to make the model follow the `[Page N]`
 tag correctly (prevention) or building a detector for when it doesn't
