@@ -963,3 +963,672 @@ async def test_get_and_delete_thread_oversized_id_returns_404_not_500():
                 )
     finally:
         await _cleanup(pool, email)
+
+
+# ---- Criterion 1: POST /threads/sync upserts threads ----
+
+
+async def test_sync_threads_basic_upsert():
+    """Criterion 1: POST /threads/sync accepts batch, upserts into threads/thread_messages
+    for the logged-in user. Verify via HTTP: assert response shape, then independently
+    GET /threads/{id} and confirm title + messages match the submitted payload, in order."""
+    pool = await _pool()
+    auth_store = AuthStore(pool)
+    thread_store = ThreadStore(pool)
+    email = "test-12-sync-basic@example.com"
+
+    try:
+        await auth_store.ensure_schema()
+        await thread_store.ensure_schema()
+        await _cleanup(pool, email)
+
+        app = _app_with_auth(auth_store, thread_store)
+
+        async with _async_client(app) as client:
+            # Signup and login
+            signup = await client.post(
+                "/signup", json={"email": email, "password": "test123"}
+            )
+            assert signup.status_code == 201
+            user_id = signup.json()["id"]
+            await client.post("/login", json={"email": email, "password": "test123"})
+
+            # Build a local thread with 3 ordered messages (user/assistant/user)
+            local_thread = {
+                "client_thread_id": "local-thread-1",
+                "title": "Test Thread Title",
+                "messages": [
+                    {"role": "user", "content": "First user message"},
+                    {"role": "assistant", "content": "First assistant response", "sources": [{"page": 1, "score": 0.95, "text": "handbook excerpt"}]},
+                    {"role": "user", "content": "Second user message"},
+                ]
+            }
+
+            # POST /threads/sync
+            sync_resp = await client.post("/threads/sync", json=[local_thread])
+            assert sync_resp.status_code == 200
+            sync_data = sync_resp.json()
+            assert isinstance(sync_data, list)
+            assert len(sync_data) == 1
+            result = sync_data[0]
+            assert "client_thread_id" in result
+            assert "id" in result
+            assert result["client_thread_id"] == "local-thread-1"
+            server_thread_id = result["id"]
+            assert isinstance(server_thread_id, int) and server_thread_id > 0
+
+            # GET /threads/{id} to verify title + messages match exactly
+            detail_resp = await client.get(f"/threads/{server_thread_id}")
+            assert detail_resp.status_code == 200
+            detail = detail_resp.json()
+            assert detail["title"] == "Test Thread Title"
+            assert len(detail["messages"]) == 3
+            assert detail["messages"][0]["role"] == "user"
+            assert detail["messages"][0]["content"] == "First user message"
+            assert detail["messages"][1]["role"] == "assistant"
+            assert detail["messages"][1]["content"] == "First assistant response"
+            assert detail["messages"][1]["sources"] is not None
+            assert len(detail["messages"][1]["sources"]) == 1
+            assert detail["messages"][1]["sources"][0]["page"] == 1
+            assert detail["messages"][2]["role"] == "user"
+            assert detail["messages"][2]["content"] == "Second user message"
+
+            # Verify thread appears in GET /threads list
+            list_resp = await client.get("/threads")
+            assert list_resp.status_code == 200
+            threads = list_resp.json()
+            assert any(t["id"] == server_thread_id for t in threads)
+    finally:
+        await _cleanup(pool, email)
+
+
+# ---- Criterion 2: Idempotent sync (no duplicates on second call) ----
+
+
+async def test_sync_threads_idempotent_second_call():
+    """Criterion 2: Calling POST /threads/sync twice with identical payload
+    (same client_thread_id) is idempotent — exactly ONE server thread exists after,
+    and thread_messages count does not double. Verify via HTTP: call sync twice,
+    then list_threads and check count, then GET and verify message count unchanged."""
+    pool = await _pool()
+    auth_store = AuthStore(pool)
+    thread_store = ThreadStore(pool)
+    email = "test-12-sync-dedup@example.com"
+
+    try:
+        await auth_store.ensure_schema()
+        await thread_store.ensure_schema()
+        await _cleanup(pool, email)
+
+        app = _app_with_auth(auth_store, thread_store)
+
+        async with _async_client(app) as client:
+            # Signup and login
+            signup = await client.post(
+                "/signup", json={"email": email, "password": "test123"}
+            )
+            assert signup.status_code == 201
+            user_id = signup.json()["id"]
+            await client.post("/login", json={"email": email, "password": "test123"})
+
+            # First sync
+            local_thread = {
+                "client_thread_id": "dedup-test-1",
+                "title": "Original Title",
+                "messages": [
+                    {"role": "user", "content": "First message"},
+                    {"role": "assistant", "content": "First response"},
+                ]
+            }
+            sync1 = await client.post("/threads/sync", json=[local_thread])
+            assert sync1.status_code == 200
+            result1 = sync1.json()[0]
+            thread_id_1 = result1["id"]
+
+            # Verify thread was created
+            detail1 = await client.get(f"/threads/{thread_id_1}")
+            assert detail1.status_code == 200
+            detail1_data = detail1.json()
+            assert detail1_data["title"] == "Original Title"
+            assert len(detail1_data["messages"]) == 2
+
+            # Second sync with IDENTICAL payload (including same client_thread_id)
+            sync2 = await client.post("/threads/sync", json=[local_thread])
+            assert sync2.status_code == 200
+            result2 = sync2.json()[0]
+            thread_id_2 = result2["id"]
+
+            # Must be the same thread_id (upsert, not new insert)
+            assert thread_id_2 == thread_id_1, (
+                f"second sync created a new thread instead of upserting: "
+                f"thread_id_1={thread_id_1}, thread_id_2={thread_id_2}"
+            )
+
+            # Verify thread still appears once in list_threads (not duplicated)
+            list_resp = await client.get("/threads")
+            assert list_resp.status_code == 200
+            threads = list_resp.json()
+            matching_threads = [t for t in threads if t["id"] == thread_id_1]
+            assert len(matching_threads) == 1, (
+                f"expected exactly 1 thread with id={thread_id_1} in list, "
+                f"got {len(matching_threads)}"
+            )
+
+            # Verify message count didn't double
+            detail2 = await client.get(f"/threads/{thread_id_2}")
+            assert detail2.status_code == 200
+            detail2_data = detail2.json()
+            assert len(detail2_data["messages"]) == 2, (
+                f"second sync duplicated messages: expected 2, got "
+                f"{len(detail2_data['messages'])}"
+            )
+    finally:
+        await _cleanup(pool, email)
+
+
+# ---- Criterion 3: window.afterLogin defined and sync before hydrate ----
+
+
+def test_after_login_defined_in_index_html():
+    """Criterion 3 (BLOCKED-ON-18, carve-out): Static evidence that window.afterLogin
+    is defined in index.html in the owned region. Does NOT test login form (that's #18's job)
+    and does NOT test ordering (see test_after_login_real_execution_order for that)."""
+    # Read index.html and search for region markers and the function definition
+    with open("app/templates/index.html", "r", encoding="utf-8") as f:
+        html = f.read()
+
+    # Verify region markers exist
+    assert "// region: after-login (#12)" in html, (
+        "Region marker '// region: after-login (#12)' not found in index.html"
+    )
+    assert "// endregion: after-login" in html, (
+        "Region marker '// endregion: after-login' not found in index.html"
+    )
+
+    # Extract region content
+    start_marker = "// region: after-login (#12)"
+    end_marker = "// endregion: after-login"
+    start_idx = html.find(start_marker)
+    end_idx = html.find(end_marker)
+    assert start_idx >= 0 and end_idx > start_idx, (
+        "Could not extract region between markers"
+    )
+    region = html[start_idx:end_idx + len(end_marker)]
+
+    # Verify window.afterLogin is defined
+    assert "window.afterLogin" in region, (
+        "window.afterLogin not defined in region"
+    )
+    assert "async function" in region or "function ()" in region, (
+        "afterLogin not defined as a function"
+    )
+
+    # Verify /threads/sync is called
+    assert "/threads/sync" in region, (
+        "/threads/sync endpoint not called in afterLogin"
+    )
+
+    # Verify hydratThreadsFromServer is called
+    assert "hydratThreadsFromServer()" in region, (
+        "hydratThreadsFromServer not called in afterLogin"
+    )
+
+
+def test_after_login_real_execution_order():
+    """Criterion 3 / ordering guarantee: window.afterLogin ACTUALLY executes
+    fetch('/threads/sync', ...) BEFORE calling hydratThreadsFromServer(), not
+    just in text order. Extracts the region from index.html, wraps it with mocked
+    localStorage/fetch/hydratThreadsFromServer, and executes via node to observe
+    real call order."""
+    import subprocess
+    import json
+
+    # Read the afterLogin region from index.html
+    with open("app/templates/index.html", "r", encoding="utf-8") as f:
+        html = f.read()
+
+    start_marker = "// region: after-login (#12)"
+    end_marker = "// endregion: after-login"
+    start_idx = html.find(start_marker)
+    end_idx = html.find(end_marker)
+    assert start_idx >= 0 and end_idx > start_idx, (
+        "Could not extract afterLogin region from index.html"
+    )
+    # Extract region without markers
+    region_with_markers = html[start_idx:end_idx + len(end_marker)]
+    # Remove the markers themselves to get just the code
+    region_lines = region_with_markers.split("\n")[1:-1]  # Skip marker lines
+    afterlogin_code = "\n".join(region_lines)
+
+    # JavaScript that wraps afterLogin with mocks and tracks call order
+    node_script = f"""
+// Track call order
+const callOrder = [];
+
+// Mock localStorage with one thread to trigger the fetch call
+const localStorage = {{}};
+const loadState = () => {{
+  return {{
+    threads: [
+      {{
+        id: 'test-thread-1',
+        title: 'Test Thread',
+        messages: [
+          {{ role: 'user', content: 'Hello' }}
+        ]
+      }}
+    ]
+  }};
+}};
+
+// Mock fetch
+const fetch = async function(url, options) {{
+  callOrder.push('fetch:' + url);
+  // Respond OK but don't read body (we don't care about the response)
+  return {{ ok: true, status: 200 }};
+}};
+
+// Mock hydratThreadsFromServer
+const hydratThreadsFromServer = async function() {{
+  callOrder.push('hydrate');
+}};
+
+// Create a window object and set afterLogin on it
+const window = {{}};
+
+// Define afterLogin (from index.html)
+{afterlogin_code}
+
+// Execute afterLogin and capture the result
+(async () => {{
+  try {{
+    await window.afterLogin();
+  }} catch (e) {{
+    // If afterLogin throws, capture the error but continue
+    console.error("afterLogin threw:", e.message);
+  }}
+  // Output call order as JSON so Python can parse it
+  console.log(JSON.stringify(callOrder));
+}})();
+"""
+
+    # Execute via node
+    result = subprocess.run(
+        ["node", "-e", node_script],
+        capture_output=True,
+        text=True,
+        timeout=5
+    )
+
+    assert result.returncode == 0, (
+        f"node execution failed with code {result.returncode}: "
+        f"stdout={result.stdout!r}, stderr={result.stderr!r}"
+    )
+
+    # Parse the call order from the last line of stdout
+    output_lines = result.stdout.strip().split("\n")
+    call_order_json = output_lines[-1]
+    try:
+        call_order = json.loads(call_order_json)
+    except json.JSONDecodeError:
+        raise AssertionError(
+            f"Could not parse call order JSON from node output: {call_order_json!r}\n"
+            f"Full output: {result.stdout!r}"
+        )
+
+    # Verify order: fetch('/threads/sync') must come BEFORE hydrate
+    sync_calls = [c for c in call_order if "fetch" in c and "/threads/sync" in c]
+    hydrate_calls = [c for c in call_order if "hydrate" in c]
+
+    assert len(sync_calls) > 0, (
+        f"fetch('/threads/sync') was never called. Call order: {call_order}"
+    )
+    assert len(hydrate_calls) > 0, (
+        f"hydratThreadsFromServer() was never called. Call order: {call_order}"
+    )
+
+    sync_idx = call_order.index(sync_calls[0])
+    hydrate_idx = call_order.index(hydrate_calls[0])
+    assert sync_idx < hydrate_idx, (
+        f"WRONG ORDER: hydrate called at position {hydrate_idx} but sync at {sync_idx}. "
+        f"Call order: {call_order}"
+    )
+
+
+# ---- Criterion 4: Thread content and ordering preserved after sync ----
+
+
+async def test_sync_threads_preserves_order_and_content():
+    """Criterion 4: A Thread created anonymously (locally), then synced after login,
+    appears identically in the server-side list (title, messages, in order) as ONE
+    thread (not duplicated across repeated syncs). Build local-shaped payload with
+    >=3 ordered messages (user/assistant/user with sources), POST /threads/sync,
+    GET /threads/{id}, assert title/messages/order match byte-for-byte, including
+    after a second identical sync."""
+    pool = await _pool()
+    auth_store = AuthStore(pool)
+    thread_store = ThreadStore(pool)
+    email = "test-12-sync-order@example.com"
+
+    try:
+        await auth_store.ensure_schema()
+        await thread_store.ensure_schema()
+        await _cleanup(pool, email)
+
+        app = _app_with_auth(auth_store, thread_store)
+
+        async with _async_client(app) as client:
+            # Signup and login
+            signup = await client.post(
+                "/signup", json={"email": email, "password": "test123"}
+            )
+            assert signup.status_code == 201
+            user_id = signup.json()["id"]
+            await client.post("/login", json={"email": email, "password": "test123"})
+
+            # Build payload with >=3 ordered messages with sources
+            local_thread = {
+                "client_thread_id": "order-test-1",
+                "title": "Ordered Messages Test",
+                "messages": [
+                    {"role": "user", "content": "What is policy?"},
+                    {"role": "assistant", "content": "Policy is...", "sources": [{"page": 1, "score": 0.95, "text": "Source 1"}]},
+                    {"role": "user", "content": "What about benefits?"},
+                    {"role": "assistant", "content": "Benefits include...", "sources": [{"page": 2, "score": 0.87, "text": "Source 2"}]},
+                ]
+            }
+
+            # First sync
+            sync1 = await client.post("/threads/sync", json=[local_thread])
+            assert sync1.status_code == 200
+            thread_id = sync1.json()[0]["id"]
+
+            # Get thread and verify exact content + order
+            detail1 = await client.get(f"/threads/{thread_id}")
+            assert detail1.status_code == 200
+            data1 = detail1.json()
+            assert data1["title"] == "Ordered Messages Test"
+            assert len(data1["messages"]) == 4
+            # Verify exact order
+            assert data1["messages"][0]["role"] == "user"
+            assert data1["messages"][0]["content"] == "What is policy?"
+            assert data1["messages"][1]["role"] == "assistant"
+            assert data1["messages"][1]["content"] == "Policy is..."
+            assert data1["messages"][1]["sources"][0]["page"] == 1
+            assert data1["messages"][2]["role"] == "user"
+            assert data1["messages"][2]["content"] == "What about benefits?"
+            assert data1["messages"][3]["role"] == "assistant"
+            assert data1["messages"][3]["content"] == "Benefits include..."
+            assert data1["messages"][3]["sources"][0]["page"] == 2
+
+            # Second identical sync (idempotent test again for this criterion)
+            sync2 = await client.post("/threads/sync", json=[local_thread])
+            assert sync2.status_code == 200
+            thread_id_2 = sync2.json()[0]["id"]
+            assert thread_id_2 == thread_id
+
+            # Get thread again after second sync
+            detail2 = await client.get(f"/threads/{thread_id}")
+            assert detail2.status_code == 200
+            data2 = detail2.json()
+
+            # Verify byte-for-byte match: same title, same message count, same order, same content
+            assert data2["title"] == data1["title"]
+            assert len(data2["messages"]) == len(data1["messages"]) == 4
+            for i, msg in enumerate(data2["messages"]):
+                original_msg = data1["messages"][i]
+                assert msg["role"] == original_msg["role"]
+                assert msg["content"] == original_msg["content"]
+                if original_msg.get("sources"):
+                    assert msg["sources"] is not None
+                    assert len(msg["sources"]) == len(original_msg["sources"])
+                    for j, src in enumerate(msg["sources"]):
+                        original_src = original_msg["sources"][j]
+                        assert src["page"] == original_src["page"]
+                        assert src["text"] == original_src["text"]
+    finally:
+        await _cleanup(pool, email)
+
+
+async def test_get_thread_orders_messages_with_id_tiebreaker():
+    """Criterion 4 / HAZARD 2: Postgres does not guarantee any particular order for
+    rows with identical created_at values without an explicit secondary sort key.
+    Forces a real MVCC scenario: give two messages the same created_at (simulating
+    a same-transaction batch insert), then UPDATE one after the other exists.
+    Without the id ASC tiebreaker, physical heap-scan order becomes undefined;
+    with it, order is guaranteed by id (insertion order).
+
+    This test creates the EXACT scenario that would break without the tiebreaker:
+    two messages with identical created_at, where an UPDATE happened after both rows
+    existed (Postgres MVCC/HOT behavior can reorder them in the heap)."""
+    pool = await _pool()
+    auth_store = AuthStore(pool)
+    thread_store = ThreadStore(pool)
+    email = "test-12-mvcc-order@example.com"
+
+    try:
+        await auth_store.ensure_schema()
+        await thread_store.ensure_schema()
+        await _cleanup(pool, email)
+
+        # Signup and login
+        app = _app_with_auth(auth_store, thread_store)
+        async with _async_client(app) as client:
+            signup = await client.post(
+                "/signup", json={"email": email, "password": "test123"}
+            )
+            assert signup.status_code == 201
+            user_id = signup.json()["id"]
+            await client.post("/login", json={"email": email, "password": "test123"})
+
+            # Create a thread
+            thread_id = await thread_store.create_thread(user_id, "MVCC Test")
+            assert thread_id is not None and thread_id > 0
+
+            # Manually insert two messages with IDENTICAL created_at (via raw SQL)
+            # This simulates the same-transaction batch insert scenario from sync_threads
+            async with pool.acquire() as conn:
+                # Get a fixed timestamp that we'll use for both messages
+                timestamp = await conn.fetchval("SELECT now()")
+
+                # Insert first message (will get lower id)
+                msg1_id = await conn.fetchval(
+                    """
+                    INSERT INTO thread_messages (thread_id, role, content, sources, created_at)
+                    VALUES ($1, $2, $3, $4, $5)
+                    RETURNING id
+                    """,
+                    thread_id,
+                    "user",
+                    "Message 1",
+                    None,
+                    timestamp,
+                )
+
+                # Insert second message (will get higher id, same created_at)
+                msg2_id = await conn.fetchval(
+                    """
+                    INSERT INTO thread_messages (thread_id, role, content, sources, created_at)
+                    VALUES ($1, $2, $3, $4, $5)
+                    RETURNING id
+                    """,
+                    thread_id,
+                    "assistant",
+                    "Message 2",
+                    None,
+                    timestamp,
+                )
+
+                # Verify the ids are in insertion order
+                assert msg1_id < msg2_id, f"msg1_id={msg1_id} should be < msg2_id={msg2_id}"
+
+                # Update the first message (triggers MVCC/HOT behavior in Postgres)
+                # This can cause physical reordering in the heap without the id tiebreaker
+                await conn.execute(
+                    """
+                    UPDATE thread_messages SET content = $1 WHERE id = $2
+                    """,
+                    "Message 1 Updated",
+                    msg1_id,
+                )
+
+            # Now fetch the thread and verify order is still correct
+            # WITHOUT the id ASC tiebreaker, the order could be [msg2, msg1]
+            # WITH the tiebreaker, order is guaranteed to be [msg1, msg2] (id ascending)
+            detail = await thread_store.get_thread(thread_id, user_id)
+            assert detail is not None
+            assert len(detail.messages) == 2, f"Expected 2 messages, got {len(detail.messages)}"
+
+            # Verify the order by id: msg1 (lower id) must come before msg2 (higher id)
+            assert detail.messages[0].id == msg1_id, (
+                f"First message must be msg1 (id={msg1_id}) due to id ASC tiebreaker, "
+                f"but got id={detail.messages[0].id}"
+            )
+            assert detail.messages[1].id == msg2_id, (
+                f"Second message must be msg2 (id={msg2_id}), but got id={detail.messages[1].id}"
+            )
+            assert detail.messages[0].content == "Message 1 Updated"
+            assert detail.messages[1].content == "Message 2"
+    finally:
+        await _cleanup(pool, email)
+
+
+# ---- Criterion 5: Ownership/access control (attacker perspective) ----
+
+
+async def test_sync_threads_respects_ownership():
+    """Criterion 5 (ORCHESTRATOR-ADDED): /threads/sync only ever writes to the
+    CALLER's own user_id (from session cookie), never a client-supplied one.
+    ATTACKER PERSPECTIVE: User A cannot target another user's threads via a crafted
+    payload. Seed a real thread for user B, have user A sync a client_thread_id that
+    collides with user B's, verify user B's thread is UNTOUCHED and user A got a
+    NEW thread instead."""
+    pool = await _pool()
+    auth_store = AuthStore(pool)
+    thread_store = ThreadStore(pool)
+    email_a = "test-12-sync-owner-a@example.com"
+    email_b = "test-12-sync-owner-b@example.com"
+
+    try:
+        await auth_store.ensure_schema()
+        await thread_store.ensure_schema()
+        await _cleanup(pool, email_a, email_b)
+
+        app = _app_with_auth(auth_store, thread_store)
+
+        # ---- Seed user B with a real thread ----
+        async with _async_client(app) as client_b:
+            signup_b = await client_b.post(
+                "/signup", json={"email": email_b, "password": "test123"}
+            )
+            assert signup_b.status_code == 201
+            user_b_id = signup_b.json()["id"]
+            await client_b.post("/login", json={"email": email_b, "password": "test123"})
+
+            # User B syncs a thread with a specific client_thread_id
+            thread_b = {
+                "client_thread_id": "collision-id",
+                "title": "User B's Secret Thread",
+                "messages": [
+                    {"role": "user", "content": "B's secret message"},
+                ]
+            }
+            sync_b = await client_b.post("/threads/sync", json=[thread_b])
+            assert sync_b.status_code == 200
+            thread_b_id = sync_b.json()[0]["id"]
+
+            # Verify B's thread exists and has the expected title
+            detail_b = await client_b.get(f"/threads/{thread_b_id}")
+            assert detail_b.status_code == 200
+            data_b = detail_b.json()
+            assert data_b["title"] == "User B's Secret Thread"
+            messages_b_before = len(data_b["messages"])
+            assert messages_b_before == 1
+
+        # ---- User A attempts to sync with the SAME client_thread_id (collision attack) ----
+        async with _async_client(app) as client_a:
+            signup_a = await client_a.post(
+                "/signup", json={"email": email_a, "password": "test123"}
+            )
+            assert signup_a.status_code == 201
+            user_a_id = signup_a.json()["id"]
+            await client_a.post("/login", json={"email": email_a, "password": "test123"})
+
+            # A tries to sync with the same collision-id
+            thread_a = {
+                "client_thread_id": "collision-id",
+                "title": "User A's Thread (spoofed title)",
+                "messages": [
+                    {"role": "user", "content": "A's injected message"},
+                ]
+            }
+            sync_a = await client_a.post("/threads/sync", json=[thread_a])
+            assert sync_a.status_code == 200
+            thread_a_id = sync_a.json()[0]["id"]
+
+            # A must have gotten a NEW thread_id (not B's)
+            assert thread_a_id != thread_b_id, (
+                f"sync allowed A to write into B's thread (same thread_id) via "
+                f"collision on client_thread_id"
+            )
+
+            # Verify A's thread exists independently
+            detail_a = await client_a.get(f"/threads/{thread_a_id}")
+            assert detail_a.status_code == 200
+            data_a = detail_a.json()
+            assert data_a["title"] == "User A's Thread (spoofed title)"
+
+            # Attempt to spoof ownership via an extra client-supplied field — the route must
+            # ignore it and always use the session-derived user (mutation_target: user_id
+            # sourced from _get_current_user_optional, never the request body). Verifier
+            # round 1 finding: without this, a mutation reading a body-supplied user_id
+            # survives, because no existing test ever sends one.
+            spoofed_thread = {
+                "client_thread_id": "spoof-attempt-1",
+                "title": "Spoofed Thread",
+                "user_id": user_b_id,  # attacker-controlled field; must be ignored
+                "messages": [{"role": "user", "content": "spoof attempt"}],
+            }
+            spoof_resp = await client_a.post("/threads/sync", json=[spoofed_thread])
+            assert spoof_resp.status_code == 200
+            spoofed_id = spoof_resp.json()[0]["id"]
+
+            # Must land in user A's own list (the session that actually made the request),
+            # never in user B's — regardless of the spoofed user_id field in the payload.
+            list_a = await client_a.get("/threads")
+            assert any(t["id"] == spoofed_id for t in list_a.json()), (
+                "spoofed thread did not appear in the session user's own list"
+            )
+
+        # ---- Verify B's thread was NOT touched and spoofed thread is NOT in B's list ----
+        async with _async_client(app) as client_b_check:
+            # Re-login as B
+            await client_b_check.post("/login", json={"email": email_b, "password": "test123"})
+
+            # Check B's thread again
+            detail_b_after = await client_b_check.get(f"/threads/{thread_b_id}")
+            assert detail_b_after.status_code == 200
+            data_b_after = detail_b_after.json()
+
+            # B's thread must be COMPLETELY unchanged
+            assert data_b_after["title"] == "User B's Secret Thread", (
+                f"B's thread title was modified: was 'User B's Secret Thread', "
+                f"now '{data_b_after['title']}'"
+            )
+            assert len(data_b_after["messages"]) == messages_b_before, (
+                f"B's thread message count changed: was {messages_b_before}, "
+                f"now {len(data_b_after['messages'])}"
+            )
+            assert data_b_after["messages"][0]["content"] == "B's secret message", (
+                f"B's message content was altered: {data_b_after['messages'][0]['content']}"
+            )
+
+            # The spoofed thread (created by A with user_id=B in payload) must NOT
+            # appear in B's list, proving A's spoofed user_id field was ignored
+            list_b = await client_b_check.get("/threads")
+            assert not any(t["id"] == spoofed_id for t in list_b.json()), (
+                "spoofed thread (created by A with spoofed user_id) appeared in B's list; "
+                "route must have ignored the user_id field and used the session user instead"
+            )
+    finally:
+        await _cleanup(pool, email_a, email_b)

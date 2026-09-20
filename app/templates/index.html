@@ -1446,6 +1446,53 @@
     }
   }
 
+  // region: after-login (#12)
+  window.afterLogin = async function () {
+    // Upload local threads via /threads/sync THEN hydrate from server.
+    // Order is critical: sync before hydrate (hydrate-first would overwrite local
+    // threads with server's old list before the upload lands).
+    try {
+      // Read current localStorage threads
+      const state = loadState();
+      const localThreads = state.threads || [];
+
+      // Convert to sync format: extract client_thread_id, title, and messages
+      const threadsToSync = [];
+      for (let i = 0; i < localThreads.length; i++) {
+        const t = localThreads[i];
+        threadsToSync.push({
+          client_thread_id: String(t.id), // Store string id as client_thread_id
+          title: t.title || null,
+          messages: t.messages || []
+        });
+      }
+
+      // POST /threads/sync with the batch
+      if (threadsToSync.length > 0) {
+        const syncResp = await fetch("/threads/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(threadsToSync)
+        });
+        if (!syncResp.ok) {
+          console.warn("Failed to sync threads, status " + syncResp.status);
+        }
+      }
+
+      // THEN hydrate from server (sync BEFORE hydrate, never reversed)
+      await hydratThreadsFromServer();
+    } catch (err) {
+      console.warn("afterLogin failed:", err);
+      // Fall back to server hydration anyway
+      try {
+        await hydratThreadsFromServer();
+      } catch (e) {
+        console.warn("Hydration fallback also failed:", e);
+      }
+    }
+  };
+  // endregion: after-login
+
   initMarked();
   syncModelLabel();
   let boot = loadState();

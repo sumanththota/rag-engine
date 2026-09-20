@@ -46,7 +46,7 @@ from app.llm import OpenAICompatibleClient
 from app.logging_utils import configure_logging, new_trace_id, trace_id_var
 from app.rag import RagError, RagService
 from app.store import PostgresStore
-from app.threads import ThreadStore, ThreadsError, _is_valid_thread_id
+from app.threads import ThreadStore, ThreadsError, ThreadSyncInput, ThreadSyncResult, _is_valid_thread_id
 from app.traces import (
     AnnotationStatus,
     GenerateStep,
@@ -976,6 +976,44 @@ def create_app(
             return JSONResponse({"error": "failed to delete thread"}, status_code=500)
 
     # region: threads-sync (#12) -- only ticket #12 edits between these markers
+
+    @app.post("/threads/sync")
+    async def sync_threads_route(
+        request: Request,
+        user: User | None = Depends(_get_current_user_optional),
+    ):
+        """Sync a batch of local Threads (client_thread_id/title/messages) to the server.
+
+        Upserts threads for the logged-in user (user_id from session, never from request body).
+        Returns ThreadSyncResult with server IDs for client-side remapping.
+        """
+        if user is None:
+            return JSONResponse({"error": "not authenticated"}, status_code=401)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+        # Validate payload: expect a list of ThreadSyncInput objects
+        if not isinstance(payload, list):
+            return JSONResponse({"error": "payload must be a list"}, status_code=400)
+
+        try:
+            threads_to_sync = [ThreadSyncInput(**item) for item in payload]
+        except Exception as e:
+            return JSONResponse({"error": f"invalid thread format: {e}"}, status_code=400)
+
+        try:
+            results = await thread_store.sync_threads(user.id, threads_to_sync)
+            return JSONResponse([
+                {"client_thread_id": r.client_thread_id, "id": r.id}
+                for r in results
+            ])
+        except ThreadsError as err:
+            logger.warning("sync_threads failed err=%s", err, extra={"stage": "http"})
+            return JSONResponse({"error": "failed to sync threads"}, status_code=500)
+
     # endregion: threads-sync
 
     # ---- traces review (ticket 4) ---------------------------------------
