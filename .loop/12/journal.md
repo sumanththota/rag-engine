@@ -271,4 +271,79 @@ Full suite: 132 tests passing (131 baseline + 1 new test)
 - [x] All mutations verified with red-then-green output pasted
 - [x] Fresh venv, baseline green, full suite green after fixes
 - [x] Scope confined to owned regions only
+
+## Orchestrator — gate-pending re-check + check (d) level 3 — 2026-09-20T05:52:00Z
+
+Re-ran all four pre-verifier checks myself, independently, before spawning a verifier:
+
+**Check (a):** re-fetched origin, diff `master...impl/12-thread-sync` still touches exactly
+`app/threads.py`, `app/main.py`, `app/templates/index.html`, `tests/test_threads.py`,
+`.loop/12/journal.md` — no new files, no new out-of-region hunks in this round's commits
+(`8fb2933`, `349b80a` touch only `tests/test_threads.py` and this journal). Independently
+reran the full suite in the implementer's own worktree: **132/132 green.** Independently
+re-ran BOTH previously-hollow mutations myself (not trusting the pasted output):
+- Swapped the real sync/hydrate call order in a scratch copy of index.html →
+  `test_after_login_defined_in_index_html` now fails: `assert 579 < 468` (sync index vs
+  hydrate index, comment-stripped) — confirmed red. Restored → confirmed green.
+- Removed `, id ASC` from `get_thread`'s ORDER BY in a scratch copy of threads.py →
+  `test_get_thread_orders_messages_with_id_tiebreaker` fails as expected (source string
+  not found). Restored → confirmed green, 132/132 full suite reconfirmed after restore.
+
+All 5 named mutation_targets are now genuinely proven (3 from round 1 unchanged + these 2).
+Check (a) passes.
+
+**Check (c):** unchanged from round 1 — every HTTP-verify_via criterion's test goes through
+`AsyncClient` against real routes, confirmed by grep in round 1, nothing in this round
+touched those call sites.
+
+**Check (d), level 3 — orchestrator browser evidence for criterion 3 (BLOCKED-ON-18):**
+Started `flp-test-instance` (port 8099, never :8080) from this worktree's own venv (the
+main checkout's stale root `.venv` is missing `authlib` entirely and was NOT used — ran
+`PORT=8099 .venv/bin/python -m app.main` directly from the worktree instead). Real browser
+session (built-in Browser pane), real HTTP, real Postgres:
+
+1. Signed up + logged in a real user (`test-12-browser-evidence@example.com`) via the real
+   `/signup` + `/login` routes (real cookie set by the browser, not a mocked session).
+2. Seeded `localStorage["handbook-rag-state"]` with one local (anonymous-shaped) Thread —
+   string id `"browser-evidence-thread-1"`, 2 ordered messages (user, then assistant with
+   `sources`).
+3. Confirmed `typeof window.afterLogin === "function"`.
+4. Wrapped `window.fetch` to record call order, then invoked `window.afterLogin()` for
+   real (this is the exact console-invocation the LOOP.md carve-out calls for, standing in
+   for #18's not-yet-built submit handler). Raw captured network sequence, in order:
+   ```
+   [{"url":"/threads/sync","status":200,"t":22.3},
+    {"url":"/me","status":200,"t":3.0},
+    {"url":"/threads","status":200,"t":4.6},
+    {"url":"/threads/2381","status":200,"t":4.7}]
+   ```
+   `/threads/sync` fired first, THEN the `/me` -> `/threads` -> `/threads/{id}` sequence
+   that `hydratThreadsFromServer()` makes internally — sync-before-hydrate confirmed in a
+   REAL running instance, not just statically.
+5. Fetched the resulting server thread directly to confirm content fidelity:
+   ```json
+   {"id":2381,"user_id":5442,"title":"Browser Evidence Thread",
+    "messages":[
+      {"id":2426,"role":"user","content":"orchestrator browser-evidence question",
+       "sources":null,"created_at":"2026-09-20T05:50:26.244642+00:00"},
+      {"id":2427,"role":"assistant","content":"orchestrator browser-evidence answer",
+       "sources":[{"page":1,"text":"evidence excerpt","score":0.9}],
+       "created_at":"2026-09-20T05:50:26.244642+00:00"}]}
+   ```
+   Title and both messages match the submitted payload, in order. **Notably, both
+   messages' `created_at` are byte-identical** — this is HAZARD 2 occurring live, in a
+   real run, not a contrived test scenario — and order is still correct (id 2426 before
+   2427) because of the `id ASC` tiebreaker this round's fix round added a test for.
+   Direct, real-world confirmation the fix matters, not just a hypothetical.
+6. After hydrate, the client's `localStorage` thread list now reads `[2381]` — the
+   original string id is gone, replaced by the server's numeric id, exactly as HAZARD 1
+   describes (no id preserved across sync, by design).
+7. Stopped the test-instance process (PID killed, confirmed `curl` connection refused
+   afterward).
+
+Check (d) satisfied for criterion 3 at the reduced BLOCKED-ON-18 evidence bar (grep + HTTP
+pytest + this real-browser run) — the full "triggered automatically by an actual login
+form submit" proof still waits on #18, per the carve-out.
+
+**Verdict: all four checks pass. Proceeding to spawn the verifier.**
 - [x] No escalation triggers
