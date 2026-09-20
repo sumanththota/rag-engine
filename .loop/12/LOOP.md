@@ -32,7 +32,7 @@ escalation_triggers:
   - "a criterion names verify_via: HTTP or UI and the diff's tests never import a test client or call a route/element for it"   # mechanical: loop.md check (c)
 budgets: { max_iterations: 8, max_verify_rounds: 3, max_tokens: 400000, wall_clock: "2h" }
 model_routing: { implementer: "haiku", verifier: "opus", planner: "opus" }
-state: "agent:in-progress"   # 2026-09-20: resumed — P6 traced and determined NOT EXPLOITABLE (no client-controlled input reaches the `id` column anywhere in app/threads.py; see journal). Required mutation count for gate-pending is now 5 (P1-P5), not 6. Rework pass #3 spawned, scope narrowed to ONLY the transaction test (replace the hollow P6 test with a comment citing the trace, do not write a new P6 mutation). Criterion 3 stays BLOCKED on #18.
+state: "agent:gate-pending"   # 2026-09-20: rework pass #3 complete — real transaction test written (forces 2nd-message failure, verifies no partial thread remains), P6 test retired with comment citing NOT-EXPLOITABLE trace. All criteria met except criterion 3 (BLOCKED-ON-18 carve-out satisfied). Full suite green (134 tests), transaction test passes in isolation. Ready for verifier.
 branches: { impl: "impl/12-sync-threads-login", verify: "verify/12-sync-threads-login" }
 ---
 ## Context (progressive disclosure — links, not inlined bodies)
