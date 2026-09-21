@@ -1,0 +1,106 @@
+{
+  "rules": [
+    "Agents APPEND features at the END, next id = max+1, only after a GitHub issue exists. Never delete, reorder, or reword an existing feature/step. Behavior change = new feature.",
+    "Only the orchestrator edits `passes`/`evidence` on existing features, at merge, after verifier PASS. Implementers never touch this file; verifier is read-only.",
+    "passes:true needs evidence '<sha> <date> <cmd>: <result>' and a green FULL `pytest -q`, not just `verify`. (browser) steps need loop.md check (d) or Playwright evidence.",
+    "Regression: passes->false, evidence -> 'REGRESSED <what broke>; last_pass <sha>'.",
+    "New feature: passes:false, evidence:null, each step one falsifiable behavior (<=25 words) copied from the issue's criteria. Link the issue, never restate it. Details live in .loop/<id>/LOOP.md.",
+    "Keep it lean: no descriptions, no prose, `note` only for a fact an agent would otherwise miss (<=1 line). Only a human may condense shipped features into bigger ones.",
+    "Next work = first feature with passes:false whose depends_on are all passes:true. Then follow .claude/commands/loop.md.",
+    "Check after edit: python -m json.tool feature_list.json >/dev/null"
+  ],
+  "features": [
+    {
+      "id": "F001",
+      "title": "RAG chat core: ingest, retrieve, SSE answer",
+      "passes": true,
+      "depends_on": [],
+      "issues": [2],
+      "verify": "pytest -q tests/test_main.py tests/test_rag.py tests/test_chunk.py tests/test_embed.py tests/test_pdfextract.py tests/test_config.py tests/test_logging_utils.py tests/test_cli_logging.py",
+      "steps": [
+        "POST /docs/upload + /ingest chunks, embeds, upserts to pgvector; dependency down returns classified error",
+        "POST /chat/start mints trace_id; missing question, bad model id, wrong method rejected",
+        "GET /chat/stream streams SSE; dependency down emits stream-error with no raw exception text",
+        "Rewrite-LLM failure falls back to raw question and turn completes",
+        "GET /health/live 200; /health/ready 503 when a dependency is not ok",
+        "One trace_id on every log line per turn/upload, no leak across requests, no prompt/answer text logged"
+      ],
+      "evidence": "1689c06 2026-09-20 pytest -q: 143 passed (baseline audit on clean tree, not a verifier round)",
+      "note": "offline eval CLI + /dashboard exist but have no automated test"
+    },
+    {
+      "id": "F002",
+      "title": "Eval trace capture and review UI",
+      "passes": true,
+      "depends_on": ["F001"],
+      "issues": [2, 3, 4, 5, 6],
+      "verify": "pytest -q tests/test_traces.py tests/test_main.py",
+      "steps": [
+        "Completed turn writes exactly one Trace with rewrite/retrieve/generate steps, after stream ends, no added latency",
+        "Failure turns still write a Trace: rewrite not configured, rewrite fallback, empty retrieval, mid-stream generation error",
+        "GET /traces lists + empty state; /traces/{id} renders steps by step.type, escapes question, 404 on unknown",
+        "POST /traces/{id}/annotate persists status/note/tags and shows on reload; unknown id 404, bad status 400",
+        "Re-writing a Trace never clobbers its Annotation"
+      ],
+      "evidence": "1689c06 2026-09-20 pytest -q: 143 passed (baseline audit)"
+    },
+    {
+      "id": "F003",
+      "title": "Optional accounts: password + Google login (backend)",
+      "passes": true,
+      "depends_on": ["F001"],
+      "issues": [9, 10],
+      "verify": "pytest -q tests/test_auth.py",
+      "steps": [
+        "POST /signup creates user without logging in; duplicate email conflicts; Google-only email rejected",
+        "POST /login good -> 200 + signed cookie (Secure unless APP_ENV=development); bad -> 401 no cookie; /logout clears",
+        "GET /me -> {user:null} for none/tampered/garbage/expired cookie, never 500; user object when logged in",
+        "get_current_user_optional never raises, even on DB failure; chat and health unchanged with auth wired",
+        "Auth routes mount only if auth store + settings given; missing SECRET_KEY raises ConfigError",
+        "Google: login redirects with state; callback rejects bad state and unverified email; links to same-email password user; off if GOOGLE_CLIENT_ID unset"
+      ],
+      "evidence": "1689c06 2026-09-20 pytest -q: 143 passed (baseline audit)"
+    },
+    {
+      "id": "F004",
+      "title": "Persisted Threads + login-time sync",
+      "passes": true,
+      "depends_on": ["F003"],
+      "issues": [11, 12, 18],
+      "verify": "pytest -q tests/test_threads.py tests/test_login_ui.py",
+      "steps": [
+        "Logged-in turn persists a Thread across turns/devices; Anonymous turn writes none",
+        "GET /threads lists only own; messages stably ordered; DELETE soft-deletes; foreign/deleted/oversized id -> 404 on read and write",
+        "POST /threads/sync upserts idempotently, keeps order/content, rejects writes to unowned Threads",
+        "afterLogin() defined once in index.html; does sync then hydrate",
+        "(browser) login form POSTs /login; afterLogin() once on success, never on 401 (static + contract tests only)"
+      ],
+      "evidence": "1689c06 2026-09-20 pytest -q: 143 passed (baseline audit; browser step not automated)",
+      "note": "login form is a blocking overlay for Anonymous users, violating ADR-0003; F005 fixes"
+    },
+    {
+      "id": "F005",
+      "title": "Optional login UX: signup, dismissible modal, logout",
+      "passes": false,
+      "depends_on": ["F003", "F004"],
+      "issues": [32],
+      "verify": null,
+      "steps": [
+        "(browser) Anonymous load: no overlay/modal, chat input usable, header shows Sign in",
+        "(browser) One-line non-blocking hint that signing in saves Threads across devices",
+        "(browser) Sign in opens modal; X, Escape, backdrop click each close it, current Thread intact",
+        "(browser) Modal toggles Sign in / Create account in place; email + password only",
+        "(browser) Signup auto-logs-in (client POSTs /login after 201), runs afterLogin(), closes modal, header shows email, no reload",
+        "(browser) Sign-in success runs afterLogin(), closes modal; wrong credentials: inline error, modal open, email kept",
+        "(browser) Duplicate email, Google-only email, invalid input each show a distinct inline message; modal stays open",
+        "(browser) Sign out POSTs /logout, header back to Sign in, server Threads hidden, client Threads shown",
+        "(browser) Valid session shows logged-in header on load; expired session or failing /me leaves app usable as Anonymous",
+        "(browser) Modal traps focus; header and modal fit 375px width",
+        "Playwright suite on a real instance covers load, signup, sign-out, sign-in, dismissal, inline errors, failing /me",
+        "No backend change: no app/*.py or schema diff; existing auth and thread tests pass unchanged"
+      ],
+      "evidence": null,
+      "note": "supersedes #18 criterion 1 (blocking login overlay); Playwright command set in #32's LOOP.md, fill `verify` then"
+    }
+  ]
+}
