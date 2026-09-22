@@ -1,0 +1,50 @@
+{
+  "$comment": [
+    "Permissions for Feature Loop Protocol ticks run headlessly by .loop/drive.sh.",
+    "A `claude -p` tick cannot answer a permission prompt: it stalls, emits no",
+    "TICK-RESULT, and the driver scores it as a silent orchestrator. Every command",
+    "/loop needs must therefore be pre-authorised here.",
+    "",
+    "Read and workflow commands are allowed. The state-changing ones a human should",
+    "still own are listed under `ask` — notably `gh pr merge`. Turn that into an",
+    "`allow` entry only when the blast-radius auto-merge policy in loop.md has been",
+    "observed REFUSING a merge at least once; a policy that has never said no is not",
+    "known to work, and until then auto-merge is an untested gate with commit rights."
+  ],
+  "permissions": {
+    "allow": [
+      "Bash(gh issue list:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh label list:*)",
+      "Bash(gh api repos/*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git fetch:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git ls-remote:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git merge-base:*)",
+      "Bash(git worktree list:*)",
+      "Bash(pytest:*)",
+      "Bash(.venv/bin/pytest:*)",
+      "Read",
+      "Grep",
+      "Glob"
+    ],
+    "ask": [
+      "Bash(gh pr merge:*)",
+      "Bash(git push:*)",
+      "Bash(git merge:*)",
+      "Bash(git reset:*)",
+      "Bash(git checkout:*)",
+      "Bash(git switch:*)"
+    ]
+  }
+}
