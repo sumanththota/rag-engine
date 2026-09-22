@@ -1,17 +1,11 @@
 #!/usr/bin/env bash
 #
-# drive.sh — the clock for the Feature Loop Protocol.
+# drive.sh — the Feature Loop orchestrator.
 #
-# `.claude/commands/loop.md` advances exactly one DAG step and exits, on the premise
-# that "a fresh context restarts you next tick". This is that restart, and nothing
-# more. Each tick is its own `claude -p` process, so each tick genuinely starts with
-# an empty context — which `CronCreate` and `/goal` would not give, since both enqueue
-# into the session already running.
-#
-# The driver holds NO opinions about tickets. It decides one thing only: tick again,
-# or stop. Every judgement about branches, gates, merges and escalation stays in
-# /loop, where it is reviewable as one document. If you find yourself adding ticket
-# logic here, it belongs in loop.md instead.
+# CURRENT: the v3 tick clock. It still runs `claude -p "/loop"`, which no longer exists
+# on this branch — do not run it.
+# TARGET (.loop/CHECKLIST.md §2): this script implements .loop/RULES.md itself and spawns
+# .loop/agents/* only for planner/implementer/verifier work. See .loop/DESIGN.md.
 #
 # Stop conditions, all checked BEFORE each tick:
 #   - any issue labelled agent:blocked         -> exit 1  (a human is needed)

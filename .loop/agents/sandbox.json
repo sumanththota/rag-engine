@@ -1,0 +1,11 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "failIfUnavailable": true,
+    "network": {
+      "allowedDomains": ["pypi.org", "files.pythonhosted.org"],
+      "allowLocalBinding": true
+    }
+  }
+}

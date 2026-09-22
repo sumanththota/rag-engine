@@ -9,3 +9,4 @@ logs/
 # driver run artifacts — protocol state lives in GitHub labels and .loop/<id>/, not here
 .loop/drive.log
 .loop/.ticks/
+.loop/state/
