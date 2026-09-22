@@ -6,10 +6,16 @@ You are the ORCHESTRATOR for one DAG step. You do NOT write feature code yoursel
 Run once, then exit (a fresh context restarts you next tick).
 
 1. READ STATE (no writes yet):
-   - gh: list issues #9-#12 with labels; list open PRs and their draft/ready state.
+   - gh: list every OPEN issue with its labels, plus any issue carrying an `agent:*`
+     label whatever its state; list open PRs and their draft/ready state. Query by
+     label, never by a hardcoded issue range — a range goes stale the moment the
+     backlog moves on, and the orchestrator then reads the wrong tickets while
+     reporting success. (Found live: this line said "#9-#12" for the whole of the
+     #33-#40 backlog's existence.)
    - .loop/INDEX.md and each open feature's LOOP.md `state`.
-2. IDEMPOTENCY: output "NO-OP" and STOP only if there is no state change AND no newly
-   ready work. A human label change counts as a change even with no new journal entry.
+2. IDEMPOTENCY: emit `TICK-RESULT: NO-OP` (see step 9) and STOP only if there is no
+   state change AND no newly ready work. A human label change counts as a change even
+   with no new journal entry.
 3. STALENESS: if a feature has sat in agent:in-progress or agent:gate-pending with no new
    journal entry for >30 min, treat it as a dead agent — label agent:blocked, write
    "stalled, no journal entry since <ts>", STOP. Silence is a failure, not a wait.
@@ -98,9 +104,34 @@ Run once, then exit (a fresh context restarts you next tick).
      PASS tests only under that LOOP.md's carve-out conditions; the PR must not say
      `Closes #N` while one is open. Reaching agent:verified with one open is still a
      stop-and-report for the human, never a merge.
-   - agent:verified -> before merging, confirm verify/<id>-* has an EMPTY diff against
-     impl/<id>-*; a verifier that edited anything has invalidated its own verdict.
-     Then (human, or auto if within blast-radius policy) merge; on merge, re-evaluate DAG:
+   - agent:verified -> BLAST-RADIUS AUTO-MERGE POLICY. Run all seven conditions below,
+     in order, every time. Auto-merge ONLY if all seven hold. Any one false -> label
+     agent:blocked, write which condition failed and its raw output to journal.md,
+     and STOP for the human. Never merge on a partial pass, and never skip a condition
+     because an earlier round passed it.
+       1. The verifier's own PASS is present as a PR comment. Read it off the PR with
+          `gh pr view <n> --comments`. A subagent summary saying "the verifier passed"
+          is NOT this condition — you receive only a summary of the verifier, and a
+          summarised verdict is a paraphrased one.
+       2. `git diff --name-only master...impl/<id>-*` — every path falls inside the
+          owned regions named in LOOP.md. Same rule and same severity as check (a).
+       3. Full suite green: `pytest -q` with NO -k filter. A scoped run cannot
+          evidence an unscoped merge.
+       4. No criterion in LOOP.md is marked BLOCKED-ON-<id>. One open -> always a
+          stop-and-report, never an auto-merge (this restates the rule above; it is
+          repeated here because this is the branch where it would actually be broken).
+       5. `verify/<id>-*` has an EMPTY diff against `impl/<id>-*` — a verifier that
+          edited anything has invalidated its own verdict. The verifier has Write and
+          Edit disallowed, but it has Bash, so this is a real check, not a formality.
+       6. `git log origin/master..impl/<id>-* --format=%B` contains no close/fix/resolve
+          keyword paired with `#N`. Found live on #10: a scaffold commit saying
+          "resolve #10" closed the issue on merge.
+       7. `gh pr view <n> --json mergeable` reports the PR mergeable with no conflicts.
+     RECORD THE POLICY RUN: write all seven conditions and their actual results into
+     journal.md BEFORE merging, not after. An auto-merge that recorded nothing and an
+     auto-merge that skipped six conditions are indistinguishable afterwards — which is
+     the same failure shape as an approved escalation that was never written down.
+     Then merge; on merge, re-evaluate DAG:
      any issue whose depends_on are all merged -> label ready-for-agent.
      Write retro.md; update INDEX.md; promote checked learnings into CONVENTIONS.md.
 6. VERIFY EVERY PUSH (standing, permanent — applies after ANY agent, implementer or
@@ -135,5 +166,17 @@ Run once, then exit (a fresh context restarts you next tick).
    implementer needs a spec rewrite; three distinct defects under mutation testing
    with the underlying route confirmed correct is a case for a human to approve one
    bounded extra round, not to redesign the ticket.
+
+9. TICK-RESULT (mandatory, machine-read): the LAST line you emit, every tick without
+   exception, is exactly one of these — no markdown, no backticks, nothing after it:
+     TICK-RESULT: NO-OP
+     TICK-RESULT: ADVANCED <id> <from-state> -> <to-state>
+     TICK-RESULT: BLOCKED <id> <one-line reason>
+   `.loop/drive.sh` greps this line to decide whether to tick again; it cannot read
+   prose. Found live on the first headless probe (2026-09-21): the orchestrator
+   correctly reported "no ready-for-agent issue exists this tick" and correctly did
+   nothing — but never emitted the literal token, so a driver watching for it would
+   have spun to its tick cap reading success as silence. An outcome a human can read
+   is not the same as an outcome a caller can read; emit both, and emit this one last.
 
 Never advance more than one step. Never let the implementer's "tests pass" be the accept signal.
