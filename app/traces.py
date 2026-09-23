@@ -141,6 +141,14 @@ class TraceCounts(BaseModel):
         }[status_filter]
 
 
+class TagCount(BaseModel):
+    """One distinct Annotation tag and how many Traces carry it, for the
+    Annotation panel's tag suggestions."""
+
+    tag: str
+    count: int
+
+
 class TraceNeighbors(BaseModel):
     """The trace_ids adjacent to a Trace in thread-list order (created_at
     DESC), for the detail page's Prev/Next navigation. None at either end
@@ -243,6 +251,23 @@ class TraceStore:
         except _DB_ERRORS as e:
             raise TraceError(f"counts failed: {e}") from e
         return TraceCounts(**dict(row))
+
+    async def tag_counts(self) -> list[TagCount]:
+        """Distinct Annotation tags across the whole table, most-used first
+        (ties alphabetical) — table-wide, not just the visible Trace list."""
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT tag, COUNT(DISTINCT trace_id) AS count
+                    FROM traces, unnest(tags) AS tag
+                    GROUP BY tag
+                    ORDER BY count DESC, tag
+                    """
+                )
+        except _DB_ERRORS as e:
+            raise TraceError(f"tag_counts failed: {e}") from e
+        return [TagCount(**dict(row)) for row in rows]
 
     async def neighbors(
         self, trace_id: str, status_filter: TraceStatusFilter = TraceStatusFilter.ALL

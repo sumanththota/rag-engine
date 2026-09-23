@@ -20,6 +20,7 @@ from app.traces import (
     GenerateStep,
     RetrieveStep,
     RewriteStep,
+    TagCount,
     TraceCounts,
     TraceDetail,
     TraceError,
@@ -96,6 +97,10 @@ _TRACES_PAGE_STYLE = """
     input#status-fail:checked + label.rate-btn.fail { background: #b00020; color: #fff; }
     .right-pane label { display: block; font-size: 0.8rem; font-weight: 600; margin: 0.6rem 0 0.3rem; }
     .right-pane textarea, .right-pane input[type=text] { width: 100%; padding: 0.5rem; border: 1px solid #d0d5dd; border-radius: 6px; font-size: 0.85rem; font-family: inherit; }
+    .tag-suggestions { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.4rem; }
+    .tag-suggestion { background: #eef0fb; color: #4361ee; border: none; border-radius: 99px; padding: 0.1rem 0.55rem; font-size: 0.72rem; cursor: pointer; }
+    .tag-suggestions.prefixes .tag-suggestion { background: none; border: 1px dashed #4361ee; }
+    .tag-suggestion .tag-count { color: #888; margin-left: 0.25rem; }
     .update-btn { margin-top: 0.9rem; width: 100%; background: #4361ee; color: #fff; border: none; border-radius: 6px; padding: 0.6rem; font-size: 0.85rem; cursor: pointer; }
     .panel-nav { display: flex; justify-content: space-between; margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid #eee; }
     .panel-nav a, .panel-nav span.disabled { font-size: 0.82rem; text-decoration: none; color: #4361ee; }
@@ -286,8 +291,49 @@ def _sidebar_html(
     )
 
 
+# Tag prefixes offered as starting points alongside the tags already in use.
+_TAG_PREFIXES = ("theme:", "keep:")
+
+# Clicking a suggestion appends it to the comma-separated tags field (once);
+# a prefix is always appended so the rest of the tag can be typed after it.
+_TAG_SUGGESTION_SCRIPT = """
+  <script>
+    document.querySelectorAll(".tag-suggestion").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const input = document.getElementById("tags");
+        const tag = btn.dataset.tag;
+        const parts = input.value.split(",").map((t) => t.trim()).filter(Boolean);
+        if (!tag.endsWith(":") && parts.includes(tag)) return;
+        input.value = [...parts, tag].join(", ");
+        input.focus();
+      });
+    });
+  </script>
+"""
+
+
+def _tag_suggestion_html(tag: str, count: int | None = None) -> str:
+    count_html = f'<span class="tag-count">{count}</span>' if count is not None else ""
+    return (
+        f'<button type="button" class="tag-suggestion" data-tag="{html.escape(tag)}">'
+        f"{html.escape(tag)}{count_html}</button>"
+    )
+
+
+def _tag_suggestions_html(tag_counts: list[TagCount]) -> str:
+    """Tags already in use across all Traces (most-used first), then the
+    theme:/keep: prefixes. Suggestions only: the field stays free text."""
+    used = "".join(_tag_suggestion_html(c.tag, c.count) for c in tag_counts)
+    prefixes = "".join(_tag_suggestion_html(p) for p in _TAG_PREFIXES)
+    used_html = f'<div class="tag-suggestions">{used}</div>' if used else ""
+    return f'{used_html}<div class="tag-suggestions prefixes">{prefixes}</div>{_TAG_SUGGESTION_SCRIPT}'
+
+
 def _annotation_panel_html(
-    trace: TraceDetail, neighbors: TraceNeighbors, status_filter: TraceStatusFilter
+    trace: TraceDetail,
+    neighbors: TraceNeighbors,
+    status_filter: TraceStatusFilter,
+    tag_counts: list[TagCount],
 ) -> str:
     tags_value = html.escape(", ".join(trace.tags))
     note_value = html.escape(trace.note or "")
@@ -320,7 +366,8 @@ def _annotation_panel_html(
         '<label for="note">Notes</label>'
         f'<textarea id="note" name="note" rows="5" placeholder="Add your notes here...">{note_value}</textarea>'
         '<label for="tags">Tags (comma-separated)</label>'
-        f'<input id="tags" type="text" name="tags" value="{tags_value}"/>'
+        f'<input id="tags" type="text" name="tags" value="{tags_value}" autocomplete="off"/>'
+        f"{_tag_suggestions_html(tag_counts)}"
         '<button type="submit" class="update-btn">Update Annotation</button>'
         "</form>"
         f'<div class="panel-nav">{prev_html}{next_html}</div>'
@@ -333,6 +380,7 @@ def _traces_page_html(
     status_filter: TraceStatusFilter,
     selected: TraceDetail | None,
     neighbors: TraceNeighbors | None,
+    tag_counts: list[TagCount] | None = None,
 ) -> str:
     """Renders the single 3-pane board (thread list / trace steps /
     annotation panel) — both GET /traces and GET /traces/{trace_id} share
@@ -347,7 +395,9 @@ def _traces_page_html(
         right_html = ""
     else:
         middle_html = _trace_detail_html(selected)
-        panel_html = _annotation_panel_html(selected, neighbors or TraceNeighbors(), status_filter)
+        panel_html = _annotation_panel_html(
+            selected, neighbors or TraceNeighbors(), status_filter, tag_counts or []
+        )
         right_html = f'<div class="right-pane">{panel_html}</div>'
 
     body_html = f'{sidebar_html}<div class="middle-pane">{middle_html}</div>{right_html}'
@@ -387,6 +437,7 @@ def build_router(trace_store: TraceStore) -> APIRouter:
         try:
             trace = await trace_store.get(first_id)
             neighbors = await trace_store.neighbors(first_id, status_filter=status_filter)
+            tag_counts = await trace_store.tag_counts()
         except TraceError as err:
             logger.warning("traces list failed err=%s", err, extra={"stage": "http"})
             return HTMLResponse(
@@ -395,7 +446,9 @@ def build_router(trace_store: TraceStore) -> APIRouter:
         finally:
             trace_id_var.reset(token)
 
-        return HTMLResponse(_traces_page_html(traces, counts, status_filter, trace, neighbors))
+        return HTMLResponse(
+            _traces_page_html(traces, counts, status_filter, trace, neighbors, tag_counts)
+        )
 
     @router.get("/traces/{trace_id}")
     async def trace_detail(trace_id: str, status: str = "all") -> HTMLResponse:
@@ -411,12 +464,15 @@ def build_router(trace_store: TraceStore) -> APIRouter:
                     neighbors = await trace_store.neighbors(trace_id, status_filter=status_filter)
                     traces = await trace_store.list_recent(status_filter=status_filter)
                     counts = await trace_store.counts()
+                    tag_counts = await trace_store.tag_counts()
             except TraceError as err:
                 logger.warning("trace detail failed err=%s", err, extra={"stage": "http"})
                 return HTMLResponse("<p>Could not load trace.</p>", status_code=500)
             if trace is None:
                 return HTMLResponse("<p>Trace not found.</p>", status_code=404)
-            return HTMLResponse(_traces_page_html(traces, counts, status_filter, trace, neighbors))
+            return HTMLResponse(
+                _traces_page_html(traces, counts, status_filter, trace, neighbors, tag_counts)
+            )
         finally:
             trace_id_var.reset(token)
 

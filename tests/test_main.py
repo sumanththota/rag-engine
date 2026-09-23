@@ -1284,3 +1284,92 @@ async def test_35_detail_text_stays_escaped():
     for raw in ("<s>question</s>", "<u>answer</u>", "<b>chunk</b>", "<i>prompt</i>"):
         assert raw not in body
         assert html.escape(raw) in body
+
+
+# ---- Issue 36: tag suggestions from tags already in use ----
+#
+# Suggestions are table-wide, so these reuse _IsolatedTraces' throwaway
+# schema. Tags go on the PASS Trace, which sits outside the newest-50 window
+# and outside the fail/unannotated lists, so it proves the suggestions don't
+# come from the visible Trace list.
+
+
+async def _tag_36(fx: _IsolatedTraces, trace_id: str, tags: list[str]) -> None:
+    await fx.pool.execute("UPDATE traces SET tags = $2 WHERE trace_id = $1", trace_id, tags)
+
+
+def _suggested_tags(body: str) -> list[str]:
+    """Suggested tag values from the Annotation panel, in rendered order."""
+    panel = body.split('<div class="right-pane">', 1)[1]
+    return [html.unescape(t) for t in re.findall(r'class="tag-suggestion" data-tag="([^"]*)"', panel)]
+
+
+async def test_36_tag_counts_are_table_wide_and_most_used_first():
+    async with _IsolatedTraces() as fx:
+        await _tag_36(fx, fx.pass_id, ["test-36-rare", "test-36-common"])
+        await _tag_36(fx, fx.fail_id, ["test-36-common", "test-36-mid"])
+        await _tag_36(fx, fx.unannotated_ids[0], ["test-36-common", "test-36-mid"])
+
+        counts = await fx.store.tag_counts()
+
+    assert [(c.tag, c.count) for c in counts] == [
+        ("test-36-common", 3),
+        ("test-36-mid", 2),
+        ("test-36-rare", 1),
+    ]
+
+
+async def test_36_panel_suggests_tags_from_traces_outside_the_visible_list():
+    async with _IsolatedTraces() as fx:
+        await _tag_36(fx, fx.pass_id, ["test-36-only-on-pass", "test-36-common"])
+        await _tag_36(fx, fx.fail_id, ["test-36-common"])
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get("/traces", params={"status": "unannotated"})
+
+    assert resp.status_code == 200
+    assert fx.pass_id not in _listed_trace_ids(resp.text)
+    suggested = _suggested_tags(resp.text)
+    assert "test-36-only-on-pass" in suggested
+    assert suggested.index("test-36-common") < suggested.index("test-36-only-on-pass")
+
+
+async def test_36_panel_offers_theme_and_keep_prefixes():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get(f"/traces/{fx.fail_id}")
+
+    suggested = _suggested_tags(resp.text)
+    assert "theme:" in suggested
+    assert "keep:" in suggested
+
+
+async def test_36_saving_a_tag_not_in_the_suggestions_still_works():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            before = await client.get(f"/traces/{fx.fail_id}")
+            assert "test-36-brand-new" not in _suggested_tags(before.text)
+            resp = await client.post(
+                f"/traces/{fx.fail_id}/annotate",
+                data={"status": "FAIL", "note": "", "tags": "test-36-brand-new"},
+            )
+            after = await client.get(f"/traces/{fx.fail_id}")
+
+    assert resp.status_code == 303
+    assert 'value="test-36-brand-new"' in after.text
+    assert "test-36-brand-new" in _suggested_tags(after.text)
+
+
+async def test_36_suggested_tags_are_escaped():
+    raw = '<b>test-36 "x"</b>'
+    async with _IsolatedTraces() as fx:
+        await _tag_36(fx, fx.pass_id, [raw])
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get(f"/traces/{fx.fail_id}")
+
+    panel = resp.text.split('<div class="right-pane">', 1)[1]
+    assert raw not in panel
+    assert raw in _suggested_tags(resp.text)
