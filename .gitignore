@@ -5,3 +5,4 @@ __pycache__/
 *.egg-info/
 logs/
 .claude/worktrees/
+.DS_Store
