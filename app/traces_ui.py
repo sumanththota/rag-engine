@@ -23,6 +23,7 @@ from app.traces import (
     TraceDetail,
     TraceError,
     TraceNeighbors,
+    TraceStatusFilter,
     TraceStep,
     TraceStore,
     TraceSummary,
@@ -50,8 +51,10 @@ _TRACES_PAGE_STYLE = """
     .sidebar-header { padding: 0.9rem 1rem; border-bottom: 1px solid #eee; }
     .sidebar-title { font-size: 0.85rem; font-weight: 700; }
     .count-badge { background: #eef0fb; color: #4361ee; border-radius: 99px; padding: 0.05rem 0.5rem; font-size: 0.7rem; margin-left: 0.4rem; }
-    .filter-toggle { display: inline-block; margin-top: 0.5rem; color: #4361ee; text-decoration: none; border: 1px solid #4361ee; border-radius: 6px; padding: 0.2rem 0.55rem; font-size: 0.72rem; }
-    .filter-toggle.active { background: #4361ee; color: #fff; }
+    .status-filters { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.5rem; }
+    .status-filter { display: inline-block; color: #4361ee; text-decoration: none; border: 1px solid #4361ee; border-radius: 6px; padding: 0.2rem 0.55rem; font-size: 0.72rem; }
+    .status-filter.active { background: #4361ee; color: #fff; }
+    .status-filter .count-badge { margin-left: 0.3rem; }
     .thread-list { overflow-y: auto; flex: 1; }
     .thread-item { display: block; padding: 0.7rem 1rem; border-bottom: 1px solid #f0f1f5; text-decoration: none; color: inherit; }
     .thread-item:hover { background: #f7f8fc; }
@@ -154,16 +157,59 @@ def _page_shell(title: str, header_html: str, body_html: str, *, main_class: str
     )
 
 
-def _sidebar_html(
-    traces: list[TraceSummary], counts: TraceCounts, unannotated_only: bool, selected_id: str | None
-) -> str:
-    qs = "?unannotated=1" if unannotated_only else ""
-    if not traces:
-        list_html = (
-            '<div class="empty">No unannotated traces — everything caught up.</div>'
-            if unannotated_only
-            else '<div class="empty">No traces yet — chat turns are captured automatically once you ask a question.</div>'
+_FILTER_LABELS = {
+    TraceStatusFilter.ALL: "All",
+    TraceStatusFilter.UNANNOTATED: "Unannotated",
+    TraceStatusFilter.PASS: AnnotationStatus.PASS.value,
+    TraceStatusFilter.FAIL: AnnotationStatus.FAIL.value,
+}
+
+_EMPTY_LIST_MESSAGES = {
+    TraceStatusFilter.ALL: "No traces yet — chat turns are captured automatically once you ask a question.",
+    TraceStatusFilter.UNANNOTATED: "No unannotated traces — everything caught up.",
+    TraceStatusFilter.PASS: "No PASS traces yet.",
+    TraceStatusFilter.FAIL: "No FAIL traces yet.",
+}
+
+
+def _filter_qs(status_filter: TraceStatusFilter) -> str:
+    """Query string that carries the active status filter onto a link; empty
+    for ALL so unfiltered URLs stay bare."""
+    return "" if status_filter is TraceStatusFilter.ALL else f"?status={status_filter.value}"
+
+
+def _with_selected(traces: list[TraceSummary], selected: TraceDetail) -> list[TraceSummary]:
+    """The Trace list plus the opened Trace, if it fell outside the list
+    (older than the newest-50 window, or not matching the active filter), so
+    the opened Trace is always visible and highlighted."""
+    if any(t.trace_id == selected.trace_id for t in traces):
+        return traces
+    extra = TraceSummary(
+        trace_id=selected.trace_id,
+        created_at=selected.created_at,
+        question=selected.question,
+        status=selected.status,
+    )
+    return sorted([*traces, extra], key=lambda t: (t.created_at, t.trace_id), reverse=True)
+
+
+def _status_filters_html(counts: TraceCounts, status_filter: TraceStatusFilter) -> str:
+    links = []
+    for option, label in _FILTER_LABELS.items():
+        active = " active" if option is status_filter else ""
+        links.append(
+            f'<a class="status-filter{active}" href="/traces{_filter_qs(option)}">'
+            f'{label}<span class="count-badge">{counts.for_filter(option)}</span></a>'
         )
+    return f'<div class="status-filters">{"".join(links)}</div>'
+
+
+def _sidebar_html(
+    traces: list[TraceSummary], counts: TraceCounts, status_filter: TraceStatusFilter, selected_id: str | None
+) -> str:
+    qs = _filter_qs(status_filter)
+    if not traces:
+        list_html = f'<div class="empty">{_EMPTY_LIST_MESSAGES[status_filter]}</div>'
     else:
         items = []
         for t in traces:
@@ -178,24 +224,23 @@ def _sidebar_html(
             )
         list_html = "".join(items)
 
-    toggle_href = "/traces" if unannotated_only else "/traces?unannotated=1"
-    toggle_label = "Show all" if unannotated_only else f"Show unannotated ({counts.unannotated})"
     return (
         '<div class="sidebar">'
         '<div class="sidebar-header">'
-        f'<span class="sidebar-title">All Traces<span class="count-badge">{counts.total}</span></span><br/>'
-        f'<a class="filter-toggle{" active" if unannotated_only else ""}" href="{toggle_href}">{toggle_label}</a>'
+        '<span class="sidebar-title">Traces</span>'
+        f"{_status_filters_html(counts, status_filter)}"
         "</div>"
         f'<div class="thread-list">{list_html}</div>'
         "</div>"
     )
 
 
-def _annotation_panel_html(trace: TraceDetail, neighbors: TraceNeighbors, unannotated_only: bool) -> str:
+def _annotation_panel_html(
+    trace: TraceDetail, neighbors: TraceNeighbors, status_filter: TraceStatusFilter
+) -> str:
     tags_value = html.escape(", ".join(trace.tags))
     note_value = html.escape(trace.note or "")
-    qs = "?unannotated=1" if unannotated_only else ""
-    unannotated_field = '<input type="hidden" name="unannotated" value="1"/>' if unannotated_only else ""
+    qs = _filter_qs(status_filter)
     pass_checked = " checked" if trace.status == AnnotationStatus.PASS.value else ""
     fail_checked = " checked" if trace.status == AnnotationStatus.FAIL.value else ""
 
@@ -212,8 +257,9 @@ def _annotation_panel_html(trace: TraceDetail, neighbors: TraceNeighbors, unanno
 
     return (
         '<div class="panel-title">Rate Conversation</div>'
-        f'<form method="post" action="/traces/{urllib.parse.quote(trace.trace_id)}/annotate">'
-        f"{unannotated_field}"
+        # The filter rides on the action's query string, not a form field:
+        # the form's own `status` field is the Annotation's PASS/FAIL.
+        f'<form method="post" action="/traces/{urllib.parse.quote(trace.trace_id)}/annotate{qs}">'
         '<div class="rate-group">'
         f'<input type="radio" id="status-pass" name="status" value="{AnnotationStatus.PASS.value}"{pass_checked}/>'
         f'<label for="status-pass" class="rate-btn pass">{AnnotationStatus.PASS.value}</label>'
@@ -233,7 +279,7 @@ def _annotation_panel_html(trace: TraceDetail, neighbors: TraceNeighbors, unanno
 def _traces_page_html(
     traces: list[TraceSummary],
     counts: TraceCounts,
-    unannotated_only: bool,
+    status_filter: TraceStatusFilter,
     selected: TraceDetail | None,
     neighbors: TraceNeighbors | None,
 ) -> str:
@@ -241,7 +287,9 @@ def _traces_page_html(
     annotation panel) — both GET /traces and GET /traces/{trace_id} share
     this, differing only in whether a trace is selected, so the sidebar and
     its filter/count state never fall out of sync between the two routes."""
-    sidebar_html = _sidebar_html(traces, counts, unannotated_only, selected.trace_id if selected else None)
+    if selected is not None:
+        traces = _with_selected(traces, selected)
+    sidebar_html = _sidebar_html(traces, counts, status_filter, selected.trace_id if selected else None)
 
     if selected is None:
         middle_html = '<div class="empty">Select a trace to review.</div>'
@@ -250,7 +298,7 @@ def _traces_page_html(
         question_html = f'<div class="trace-question">{html.escape(selected.question)}</div>'
         steps_html = "".join(_step_html(step) for step in selected.steps)
         middle_html = f"{question_html}{steps_html}"
-        panel_html = _annotation_panel_html(selected, neighbors or TraceNeighbors(), unannotated_only)
+        panel_html = _annotation_panel_html(selected, neighbors or TraceNeighbors(), status_filter)
         right_html = f'<div class="right-pane">{panel_html}</div>'
 
     body_html = f'{sidebar_html}<div class="middle-pane">{middle_html}</div>{right_html}'
@@ -265,58 +313,61 @@ def build_router(trace_store: TraceStore) -> APIRouter:
     router = APIRouter()
 
     @router.get("/traces")
-    async def traces_list(unannotated: bool = False) -> HTMLResponse:
+    async def traces_list(status: str = "all") -> HTMLResponse:
         # Renders the same 3-pane board as GET /traces/{trace_id}, with the
         # most recent trace auto-selected (matching the reference UI's
         # always-something-open sidebar) — never redirects there, so this
         # stays a plain 200 for callers that just want the thread list.
+        status_filter = TraceStatusFilter.parse(status)
         try:
-            traces = await trace_store.list_recent(unannotated_only=unannotated)
+            traces = await trace_store.list_recent(status_filter=status_filter)
             counts = await trace_store.counts()
         except TraceError as err:
             logger.warning("traces list failed err=%s", err, extra={"stage": "http"})
+            empty_counts = TraceCounts(total=0, unannotated=0, passed=0, failed=0)
             return HTMLResponse(
-                _traces_page_html([], TraceCounts(total=0, unannotated=0), unannotated, None, None),
+                _traces_page_html([], empty_counts, status_filter, None, None),
                 status_code=500,
             )
 
         if not traces:
-            return HTMLResponse(_traces_page_html(traces, counts, unannotated, None, None))
+            return HTMLResponse(_traces_page_html(traces, counts, status_filter, None, None))
 
         first_id = traces[0].trace_id
         token = trace_id_var.set(first_id)
         try:
             trace = await trace_store.get(first_id)
-            neighbors = await trace_store.neighbors(first_id, unannotated_only=unannotated)
+            neighbors = await trace_store.neighbors(first_id, status_filter=status_filter)
         except TraceError as err:
             logger.warning("traces list failed err=%s", err, extra={"stage": "http"})
             return HTMLResponse(
-                _traces_page_html(traces, counts, unannotated, None, None), status_code=500
+                _traces_page_html(traces, counts, status_filter, None, None), status_code=500
             )
         finally:
             trace_id_var.reset(token)
 
-        return HTMLResponse(_traces_page_html(traces, counts, unannotated, trace, neighbors))
+        return HTMLResponse(_traces_page_html(traces, counts, status_filter, trace, neighbors))
 
     @router.get("/traces/{trace_id}")
-    async def trace_detail(trace_id: str, unannotated: bool = False) -> HTMLResponse:
+    async def trace_detail(trace_id: str, status: str = "all") -> HTMLResponse:
         # trace_id is the Trace being reviewed, so it's the natural scope for
         # trace_id_var here (spec story 17: correlate a Trace's review-UI
         # activity with its own capture logs via the same trace_id).
+        status_filter = TraceStatusFilter.parse(status)
         token = trace_id_var.set(trace_id)
         try:
             try:
                 trace = await trace_store.get(trace_id)
                 if trace is not None:
-                    neighbors = await trace_store.neighbors(trace_id, unannotated_only=unannotated)
-                    traces = await trace_store.list_recent(unannotated_only=unannotated)
+                    neighbors = await trace_store.neighbors(trace_id, status_filter=status_filter)
+                    traces = await trace_store.list_recent(status_filter=status_filter)
                     counts = await trace_store.counts()
             except TraceError as err:
                 logger.warning("trace detail failed err=%s", err, extra={"stage": "http"})
                 return HTMLResponse("<p>Could not load trace.</p>", status_code=500)
             if trace is None:
                 return HTMLResponse("<p>Trace not found.</p>", status_code=404)
-            return HTMLResponse(_traces_page_html(traces, counts, unannotated, trace, neighbors))
+            return HTMLResponse(_traces_page_html(traces, counts, status_filter, trace, neighbors))
         finally:
             trace_id_var.reset(token)
 
@@ -328,7 +379,7 @@ def build_router(trace_store: TraceStore) -> APIRouter:
             status_raw = str(form.get("status", "")).strip()
             note = str(form.get("note", "")).strip()
             tags = [t.strip() for t in str(form.get("tags", "")).split(",") if t.strip()]
-            unannotated_filter = str(form.get("unannotated", "")).strip() == "1"
+            status_filter = TraceStatusFilter.parse(request.query_params.get("status"))
 
             try:
                 status = AnnotationStatus(status_raw)
@@ -345,9 +396,8 @@ def build_router(trace_store: TraceStore) -> APIRouter:
             if not updated:
                 return HTMLResponse("<p>Trace not found.</p>", status_code=404)
 
-            redirect_qs = "?unannotated=1" if unannotated_filter else ""
             return RedirectResponse(
-                url=f"/traces/{urllib.parse.quote(trace_id)}{redirect_qs}", status_code=303
+                url=f"/traces/{urllib.parse.quote(trace_id)}{_filter_qs(status_filter)}", status_code=303
             )
         finally:
             trace_id_var.reset(token)

@@ -984,3 +984,166 @@ async def test_annotate_invalid_status_returns_400():
         if trace_id:
             await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
         await pool.close()
+
+
+# ---- Issue 34: filter Traces by Annotation status, with counts ----
+#
+# Counts and the newest-50 window are table-wide, so these run against a
+# throwaway schema (same seam as test_traces_list_empty_state) — the shared
+# dev Postgres carries real eval traces that would skew both.
+
+
+class _IsolatedTraces:
+    """A TraceStore bound to its own throwaway schema, seeded with 1 PASS
+    Trace (oldest), 1 FAIL Trace, then 51 unannotated Traces — so the PASS
+    Trace sits outside the newest-50 window of both `all` and the old
+    unannotated-first list."""
+
+    async def __aenter__(self) -> "_IsolatedTraces":
+        self.schema = f"test_34_{uuid.uuid4().hex[:8]}"
+        admin_conn = await asyncpg.connect(dsn=_TRACES_DSN)
+        try:
+            await admin_conn.execute(f'CREATE SCHEMA "{self.schema}"')
+        finally:
+            await admin_conn.close()
+        self.pool = await asyncpg.create_pool(
+            dsn=_TRACES_DSN, min_size=0, max_size=2, server_settings={"search_path": self.schema}
+        )
+        self.store = TraceStore(self.pool)
+        await self.store.ensure_schema()
+
+        self.pass_id = "test-34-pass"
+        self.fail_id = "test-34-fail"
+        self.unannotated_ids = [f"test-34-u{i:02d}" for i in range(51)]
+        ordered = [self.pass_id, self.fail_id, *self.unannotated_ids]  # oldest first
+        for i, trace_id in enumerate(ordered):
+            await self.store.write(trace_id, f"question {trace_id}", [])
+            await self.pool.execute(
+                "UPDATE traces SET created_at = '2026-01-01'::timestamptz + make_interval(mins => $2) "
+                "WHERE trace_id = $1",
+                trace_id,
+                i,
+            )
+        await self.pool.execute("UPDATE traces SET status = 'PASS' WHERE trace_id = $1", self.pass_id)
+        await self.pool.execute("UPDATE traces SET status = 'FAIL' WHERE trace_id = $1", self.fail_id)
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        await self.pool.close()
+        admin_conn = await asyncpg.connect(dsn=_TRACES_DSN)
+        try:
+            await admin_conn.execute(f'DROP SCHEMA "{self.schema}" CASCADE')
+        finally:
+            await admin_conn.close()
+
+
+def _filter_counts(body: str) -> dict[str, int]:
+    """Parses the status filter bar: {'all': n, 'unannotated': n, 'pass': n, 'fail': n}."""
+    found = re.findall(
+        r'class="status-filter[^"]*" href="/traces(?:\?status=(\w+))?"[^>]*>[^<]*<span class="count-badge">(\d+)</span>',
+        body,
+    )
+    return {(key or "all"): int(n) for key, n in found}
+
+
+def _listed_trace_ids(body: str) -> list[str]:
+    return re.findall(r'class="thread-item[^"]*" href="/traces/([^"?]+)', body)
+
+
+async def test_34_status_pass_lists_pass_trace_behind_50_unannotated():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get("/traces", params={"status": "pass"})
+
+    assert resp.status_code == 200
+    assert _listed_trace_ids(resp.text) == [fx.pass_id]
+
+
+async def test_34_each_status_filter_lists_only_matching_traces():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            fail_resp = await client.get("/traces", params={"status": "fail"})
+            unannotated_resp = await client.get("/traces", params={"status": "unannotated"})
+            all_resp = await client.get("/traces", params={"status": "all"})
+
+    assert _listed_trace_ids(fail_resp.text) == [fx.fail_id]
+    unannotated_listed = _listed_trace_ids(unannotated_resp.text)
+    assert len(unannotated_listed) == 50
+    assert set(unannotated_listed) <= set(fx.unannotated_ids)
+    assert _listed_trace_ids(all_resp.text) == list(reversed(fx.unannotated_ids))[:50]
+
+
+async def test_34_unknown_status_behaves_as_all():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            bogus_resp = await client.get("/traces", params={"status": "bogus"})
+            all_resp = await client.get("/traces")
+
+    assert bogus_resp.status_code == 200
+    assert _listed_trace_ids(bogus_resp.text) == _listed_trace_ids(all_resp.text)
+    assert len(_listed_trace_ids(bogus_resp.text)) == 50
+
+
+async def test_34_counts_are_table_wide_and_independent_of_active_filter():
+    expected = {"all": 53, "unannotated": 51, "pass": 1, "fail": 1}
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            for status in ("all", "unannotated", "pass", "fail"):
+                resp = await client.get("/traces", params={"status": status})
+                assert _filter_counts(resp.text) == expected, status
+
+
+async def test_34_detail_outside_window_is_listed_and_active():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get(f"/traces/{fx.pass_id}")
+
+    assert resp.status_code == 200
+    assert fx.pass_id in _listed_trace_ids(resp.text)
+    assert f'class="thread-item active" href="/traces/{fx.pass_id}"' in resp.text
+
+
+async def test_34_back_next_links_keep_status_filter():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        middle_id = fx.unannotated_ids[25]
+        async with _async_client(app) as client:
+            resp = await client.get(f"/traces/{middle_id}", params={"status": "unannotated"})
+
+    nav = resp.text.split('class="panel-nav"', 1)[1]
+    assert f'href="/traces/{fx.unannotated_ids[26]}?status=unannotated"' in nav
+    assert f'href="/traces/{fx.unannotated_ids[24]}?status=unannotated"' in nav
+    # Trace list links keep the filter too.
+    assert f'href="/traces/{fx.unannotated_ids[50]}?status=unannotated"' in resp.text
+
+
+async def test_34_annotate_redirect_keeps_status_filter():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        target = fx.unannotated_ids[0]
+        async with _async_client(app) as client:
+            detail = await client.get(f"/traces/{target}", params={"status": "unannotated"})
+            action = re.search(r'<form method="post" action="([^"]+)"', detail.text).group(1)
+            resp = await client.post(action, data={"status": "FAIL", "note": "", "tags": ""})
+
+    assert action == f"/traces/{target}/annotate?status=unannotated"
+    assert resp.status_code == 303
+    assert resp.headers["location"] == f"/traces/{target}?status=unannotated"
+
+
+async def test_34_old_unannotated_toggle_is_removed():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            list_resp = await client.get("/traces")
+            legacy_resp = await client.get("/traces", params={"unannotated": "1"})
+
+    assert "unannotated=1" not in list_resp.text
+    assert "Show unannotated" not in list_resp.text
+    # The legacy parameter is ignored: same list as the default `all` view.
+    assert _listed_trace_ids(legacy_resp.text) == _listed_trace_ids(list_resp.text)
