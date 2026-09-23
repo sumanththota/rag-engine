@@ -109,7 +109,7 @@ tokens via SSE).
   `pytest` only, spinning up a throwaway test instance on an ephemeral port
   where a criterion actually needs a live server.
 - `.venv` is never portable (absolute paths). In a fresh checkout or
-  sandbox, rebuild it first: `uv sync` (or the README's main setup), and
+  sandbox, rebuild it first: `uv sync --extra dev` (or the README's main setup), and
   confirm `pytest -q` is green before starting work.
 - Every new test file gets its own setup/cleanup scoped to its own fixture
   prefix. Do not rely on another test's teardown or ordering.

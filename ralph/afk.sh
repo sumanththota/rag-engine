@@ -15,6 +15,19 @@ if [[ "$branch" == "master" || "$branch" == "main" || -z "$branch" ]]; then
   exit 1
 fi
 
+sandbox=ralph-rag-engine
+pg_port=5433 # host Postgres port, from DATABASE_URL in .env
+
+# One-time sandbox setup. The sandbox proxy blocks direct TCP to the host, so
+# Postgres is reached by tunnelling through the proxy's HTTP CONNECT (allow +
+# bypass TLS interception for that one port). The Linux venv lives outside the
+# mounted workspace so it never clobbers the host's macOS .venv.
+if ! docker sandbox ls | awk 'NR>1 {print $1}' | grep -qx "$sandbox"; then
+  docker sandbox create --name "$sandbox" -q claude .
+  docker sandbox network proxy "$sandbox" --allow-host "localhost:$pg_port" --bypass-host "localhost:$pg_port"
+  docker sandbox exec "$sandbox" bash -c 'echo "export UV_PROJECT_ENVIRONMENT=/home/agent/.venv-rag-engine" > /etc/sandbox-persistent.sh'
+fi
+
 # jq filter to extract streaming text from assistant messages
 stream_text='select(.type == "assistant").message.content[]? | select(.type == "text").text // empty | gsub("\n"; "\r\n") | . + "\r\n\n"'
 
@@ -31,7 +44,12 @@ for ((i=1; i<=$1; i++)); do
   issues=$(gh issue list --label ready-for-agent --state open --json number,title,body,comments --limit 50 2>/dev/null || echo "No issues found")
   prompt=$(cat ralph/prompt.md)
 
-  docker sandbox run claude . -- \
+  # Forward sandbox localhost:$pg_port to host Postgres via the proxy, so
+  # DATABASE_URL works unchanged. Exits harmlessly if already listening.
+  docker sandbox exec -d "$sandbox" socat "TCP-LISTEN:$pg_port,bind=127.0.0.1,fork,reuseaddr" \
+    "PROXY:host.docker.internal:localhost:$pg_port,proxyport=3128"
+
+  docker sandbox run "$sandbox" -- \
     --verbose \
     --print \
     --output-format stream-json \
