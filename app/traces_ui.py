@@ -9,6 +9,7 @@ Split out of app/main.py so review-UI changes stay in one module;
 import html
 import logging
 import urllib.parse
+from datetime import datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
@@ -68,10 +69,14 @@ _TRACES_PAGE_STYLE = """
     .thread-item:hover { background: #f7f8fc; }
     .thread-item.active { background: #eef0fb; border-left: 3px solid #4361ee; }
     .thread-item-top { display: flex; justify-content: space-between; align-items: center; font-family: monospace; font-size: 0.78rem; font-weight: 700; }
-    .status-icon.pass { color: #147a4a; }
-    .status-icon.fail { color: #b00020; }
-    .status-icon.unannotated { color: #ccc; }
-    .thread-question { font-size: 0.78rem; color: #444; margin-top: 0.25rem; }
+    .status-pill { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 0.65rem; font-weight: 700; border-radius: 99px; padding: 0.05rem 0.45rem; }
+    .status-pill.pass { background: #e3f8ec; color: #147a4a; }
+    .status-pill.fail { background: #fde7ea; color: #b00020; }
+    .status-pill.unannotated { background: #f0f1f5; color: #999; font-weight: 400; }
+    .row-tags { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.3rem; }
+    .row-tag { background: #eef0fb; color: #4361ee; border-radius: 99px; padding: 0 0.45rem; font-size: 0.66rem; }
+    .row-tag.theme { background: #f3e8fd; color: #7b2cbf; }
+    .thread-question { font-size: 0.78rem; color: #444; margin-top: 0.25rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .thread-meta { font-size: 0.7rem; color: #999; margin-top: 0.2rem; }
 
     /* middle pane: trace steps */
@@ -124,12 +129,28 @@ def _rewrite_status_badge(status: str) -> str:
     return f'<span class="badge {html.escape(status)}">{html.escape(status)}</span>'
 
 
-def _status_icon(status: str | None) -> str:
+def _status_pill(status: str | None) -> str:
     if status == AnnotationStatus.PASS.value:
-        return '<span class="status-icon pass">&#10003;</span>'
+        return '<span class="status-pill pass">PASS</span>'
     if status == AnnotationStatus.FAIL.value:
-        return '<span class="status-icon fail">&#10007;</span>'
-    return '<span class="status-icon unannotated">&ndash;</span>'
+        return '<span class="status-pill fail">FAIL</span>'
+    return '<span class="status-pill unannotated">unannotated</span>'
+
+
+def _row_tags_html(tags: list[str]) -> str:
+    """A list row's Annotation tags as chips; theme: tags get a .theme hook."""
+    if not tags:
+        return ""
+    chips = "".join(
+        f'<span class="row-tag{" theme" if tag.startswith("theme:") else ""}">{html.escape(tag)}</span>'
+        for tag in tags
+    )
+    return f'<div class="row-tags">{chips}</div>'
+
+
+def _short_timestamp(created_at: datetime) -> str:
+    """e.g. "Jan 1, 00:01" — no seconds, microseconds or offset."""
+    return f"{created_at:%b} {created_at.day}, {created_at:%H:%M}"
 
 
 # Chunks shown open in the detail; the rest sit behind a collapsed "show N more".
@@ -285,6 +306,7 @@ def _with_selected(traces: list[TraceSummary], selected: TraceDetail) -> list[Tr
         created_at=selected.created_at,
         question=selected.question,
         status=selected.status,
+        tags=selected.tags,
     )
     return sorted([*traces, extra], key=lambda t: (t.created_at, t.trace_id), reverse=True)
 
@@ -368,9 +390,10 @@ def _sidebar_html(
             active = " active" if t.trace_id == selected_id else ""
             items.append(
                 f'<a class="thread-item{active}" href="{_trace_href(t.trace_id, trace_filter, page)}">'
-                f'<div class="thread-item-top"><span>{html.escape(t.trace_id)}</span>{_status_icon(t.status)}</div>'
+                f'<div class="thread-item-top"><span>{html.escape(t.trace_id)}</span>{_status_pill(t.status)}</div>'
+                f"{_row_tags_html(t.tags)}"
                 f'<div class="thread-question">{html.escape(question)}</div>'
-                f'<div class="thread-meta">{html.escape(t.created_at.isoformat())}</div>'
+                f'<div class="thread-meta">{html.escape(_short_timestamp(t.created_at))}</div>'
                 "</a>"
             )
         list_html = "".join(items)

@@ -137,6 +137,7 @@ class TraceSummary(BaseModel):
     created_at: datetime
     question: str
     status: str | None = None
+    tags: list[str] = []
 
 
 class TraceDetail(BaseModel):
@@ -249,7 +250,7 @@ class TraceStore:
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(
                     f"""
-                    SELECT trace_id, created_at, question, status
+                    SELECT trace_id, created_at, question, status, tags
                     FROM traces
                     WHERE {_filter_sql(3)}
                     ORDER BY created_at DESC, trace_id DESC
@@ -262,7 +263,7 @@ class TraceStore:
         except _DB_ERRORS as e:
             raise TraceError(f"list_recent failed: {e}") from e
         try:
-            return [TraceSummary(**dict(row)) for row in rows]
+            return [TraceSummary(**{**dict(row), "tags": list(row["tags"])}) for row in rows]
         except (ValidationError, TypeError) as e:
             raise TraceError(f"list_recent failed to parse rows: {e}") from e
 

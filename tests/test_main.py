@@ -1661,3 +1661,87 @@ async def test_39_panel_has_save_and_next_and_keyboard_shortcuts():
         assert key in script
     # Typing in the notes or tags fields never triggers a shortcut.
     assert '["note", "tags"]' in script
+
+
+# ---- Issue 38: richer Trace list rows ----
+#
+# Reuses _IsolatedTraces' throwaway schema: seeded created_at values are
+# known (2026-01-01 + i minutes), so timestamps can be asserted exactly.
+
+
+def _list_rows(body: str) -> dict[str, str]:
+    """Each listed Trace's row markup, keyed by trace_id."""
+    rows = re.findall(r'(<a class="thread-item[^"]*" href="/traces/([^"?]+).*?</a>)', body, re.S)
+    return {trace_id: row for row, trace_id in rows}
+
+
+async def test_38_rows_show_a_labelled_status_pill():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get(f"/traces/{fx.pass_id}", params={"status": "all"})
+            fail_resp = await client.get("/traces", params={"status": "fail"})
+
+    rows = _list_rows(resp.text)
+    assert re.search(r'class="status-pill pass"[^>]*>PASS<', rows[fx.pass_id])
+    assert re.search(r'class="status-pill fail"[^>]*>FAIL<', _list_rows(fail_resp.text)[fx.fail_id])
+    assert re.search(r'class="status-pill unannotated"[^>]*>unannotated<', rows[fx.unannotated_ids[-1]])
+
+
+async def test_38_rows_list_tags_with_theme_tags_marked():
+    async with _IsolatedTraces() as fx:
+        await _tag_36(fx, fx.fail_id, ["test-38-plain", "theme:test-38"])
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get("/traces", params={"status": "fail"})
+
+    row = _list_rows(resp.text)[fx.fail_id]
+    assert re.search(r'<span class="row-tag">test-38-plain</span>', row)
+    assert re.search(r'<span class="row-tag theme">theme:test-38</span>', row)
+
+
+async def test_38_long_question_is_truncated_to_one_line_with_ellipsis():
+    long_question = "test-38 " + "word " * 40
+    async with _IsolatedTraces() as fx:
+        await _question_37(fx, fx.fail_id, long_question)
+        await _question_37(fx, fx.pass_id, "test-38 short question")
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            fail_resp = await client.get("/traces", params={"status": "fail"})
+            pass_resp = await client.get("/traces", params={"status": "pass"})
+
+    shown = re.search(r'<div class="thread-question"[^>]*>([^<]*)</div>', _list_rows(fail_resp.text)[fx.fail_id])
+    assert shown is not None
+    assert shown.group(1).endswith("…")
+    assert len(shown.group(1)) < len(long_question)
+    assert long_question.strip() not in fail_resp.text.split('<div class="middle-pane')[0]
+    assert '<div class="thread-question">test-38 short question</div>' in _list_rows(pass_resp.text)[fx.pass_id]
+
+
+async def test_38_timestamps_are_short_and_readable():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get("/traces", params={"status": "fail"})
+
+    row = _list_rows(resp.text)[fx.fail_id]
+    # The FAIL Trace was seeded at 2026-01-01 00:01 UTC.
+    assert '<div class="thread-meta">Jan 1, 00:01</div>' in row
+    sidebar = resp.text.split('<div class="middle-pane')[0]
+    assert not re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", sidebar)
+    assert not re.search(r"\d{2}:\d{2}:\d{2}\.\d+", sidebar)
+
+
+async def test_38_row_tags_and_questions_are_escaped():
+    async with _IsolatedTraces() as fx:
+        await _tag_36(fx, fx.fail_id, ["<b>test-38</b>", "theme:<i>x</i>"])
+        await _question_37(fx, fx.fail_id, "<script>test-38</script>")
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get("/traces", params={"status": "fail"})
+
+    row = _list_rows(resp.text)[fx.fail_id]
+    assert "&lt;b&gt;test-38&lt;/b&gt;" in row
+    assert "theme:&lt;i&gt;x&lt;/i&gt;" in row
+    assert "&lt;script&gt;test-38&lt;/script&gt;" in row
+    assert "<b>test-38" not in resp.text and "<script>test-38" not in resp.text
