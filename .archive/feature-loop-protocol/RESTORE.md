@@ -30,3 +30,6 @@ User-level skills `flp-doc-sync`, `flp-reshape`, `loop-me` live in `~/.claude/sk
   Local tags `archive/<branch>` keep them; `archive/flp/driver` includes a WIP commit
   snapshotting the worktree's uncommitted `.loop/32`, `.loop/bin`, `drive.sh` edits.
   `git switch -c <branch> archive/<branch>` to restore.
+- Merged master after #42 (flp/driver): its `.loop/{DESIGN.md,drive.sh,33-contract-draft.md}`
+  landed under `loop/`, its `.claude/settings.json` (headless-tick permissions) under
+  `claude/settings.json`, and its `.gitignore` lines (`.loop/drive.log`, `.loop/.ticks/`) dropped.
