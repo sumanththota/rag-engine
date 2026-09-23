@@ -130,7 +130,7 @@ tokens via SSE).
   do not assume `.worktreeinclude` fired just because it's declared.
 - `pyproject.toml` now has a `[build-system]` table and `[tool.setuptools]`
   packages config (added during ticket #11, approved by a human — see
-  `.loop/11/journal.md`). The `PYTHONPATH=.` workaround noted in earlier
+  `.archive/feature-loop-protocol/loop/11/journal.md`). The `PYTHONPATH=.` workaround noted in earlier
   tickets' retros is no longer required going forward; existing tests that
   still set it are unaffected by the change.
 - Every new test file gets its own setup/cleanup scoped to its own fixture
