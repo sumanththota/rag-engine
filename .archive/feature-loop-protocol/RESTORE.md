@@ -17,7 +17,10 @@ Original locations, if you ever restore:
 
 Restore with `git mv` in reverse.
 
-Left in place on purpose:
-- `.claude/launch.json` still has the `flp-test-instance` dev server (port 8099) — a plain second app instance, harmless outside the protocol.
-- `tests/test_auth.py` and `tests/test_login_ui.py` have docstrings citing `.loop/9` and `.loop/18`; those tickets now live under `loop/` here.
-- User-level skills `flp-doc-sync`, `flp-reshape`, `loop-me` live in `~/.claude/skills/` and are global, not part of this repo.
+Removed from live files (restore by hand if the protocol returns):
+- `flp-test-instance` dev server (port 8099) in `.claude/launch.json`.
+- Old CONVENTIONS.md §7 worktree/orchestrator/verifier rules (see git history before "align ralph").
+- Test docstrings citing `.loop/9` and `.loop/18` now say "issue #9/#18".
+- GitHub labels `agent:gate-pending`, `agent:in-progress` deleted; `agent:verified` kept (still on closed #9-#12, #18).
+
+User-level skills `flp-doc-sync`, `flp-reshape`, `loop-me` live in `~/.claude/skills/` and are global, not part of this repo.

@@ -1,4 +1,4 @@
-"""Auth tests — Feature Loop ticket 9 (.loop/9/LOOP.md).
+"""Auth tests — issue #9.
 
 AuthStore tests hit the real dev Postgres at localhost:5433 (same DSN as
 tests/test_traces.py), per CONVENTIONS.md §7: a users/auth_identities write
