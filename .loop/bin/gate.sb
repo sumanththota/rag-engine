@@ -1,0 +1,11 @@
+;; macOS sandbox-exec profile for code the gate runs (pytest, contract `check`s).
+;; The gate runs implementer-written code; this keeps it from reaching GitHub or writing
+;; outside its own clone. Param CLONE = realpath of the gate clone.
+(version 1)
+(allow default)
+(deny network*)
+(allow network* (remote ip "localhost:*"))
+(allow network* (local ip "localhost:*"))
+(allow network* (remote unix-socket))
+(deny file-write*)
+(allow file-write* (subpath (param "CLONE")) (subpath "/dev"))

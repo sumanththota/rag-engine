@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""Implementation gate (RULES.md T2 step 7) and base check (T2 step 1).
+
+  gate --repo DRIVER --sha SHA --workdir DIR --env-file .env
+       [--base BASE_SHA --contract-json C.json]      # implementation gate
+       [--base-only]                                 # base check: pytest only
+
+Fresh `git clone --local` at SHA in DIR, .env copied in. Order matters: diff/owned/protected
+are decided from git alone, BEFORE any of the diff's code is installed or run. Then a fresh
+.venv (VENV_CMD, unsandboxed: needs PyPI), then pytest and every mechanical `check` under
+sandbox-exec (gate.sb: localhost only, writes only inside DIR).
+Exit 0 = every rule holds; 1 = any fails (report on stdout).
+"""
+import argparse
+import fnmatch
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+VENV_CMD = os.environ.get(
+    "VENV_CMD", 'uv venv -q .venv && uv pip install -q --python .venv/bin/python -e ".[dev]"')
+TIMEOUT = int(os.environ.get("GATE_TIMEOUT", "1800"))
+TAIL = 150  # lines of command output kept in the report
+
+
+def run(cmd, cwd, env=None, shell=False):
+    """(rc, output). Own process group; the whole group dies on timeout."""
+    p = subprocess.Popen(cmd, cwd=cwd, env=env, shell=shell, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    try:
+        out, _ = p.communicate(timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)
+        out, _ = p.communicate()
+        return 124, (out or "") + f"\n[gate: killed after {TIMEOUT}s]"
+    except BaseException:  # Ctrl-C / SIGTERM of the driver: take the group down with us
+        os.killpg(p.pid, signal.SIGKILL)
+        raise
+    try:
+        os.killpg(p.pid, signal.SIGKILL)  # stragglers (servers a test forgot)
+    except OSError:
+        pass
+    return p.returncode, out
+
+
+def tail(text):
+    lines = text.rstrip().split("\n")
+    return "\n".join((["[... cut ...]"] if len(lines) > TAIL else []) + lines[-TAIL:])
+
+
+def git(*args, cwd):
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout
+
+
+def sandboxed(clone, cmd, base=None):
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "VIRTUAL_ENV")}
+    env["PATH"] = os.path.join(clone, ".venv", "bin") + os.pathsep + env.get("PATH", "")
+    env["TMPDIR"] = os.path.join(clone, ".tmp")
+    if base:
+        env["BASE_SHA"] = base
+    sb = ["sandbox-exec", "-D", f"CLONE={clone}", "-f", os.path.join(HERE, "gate.sb")]
+    return run(sb + ["/bin/bash", "-c", cmd], cwd=clone, env=env)
+
+
+def main():
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--repo", required=True)
+    ap.add_argument("--sha", required=True)
+    ap.add_argument("--workdir", required=True)
+    ap.add_argument("--env-file", required=True)
+    ap.add_argument("--base")
+    ap.add_argument("--contract-json")
+    ap.add_argument("--base-only", action="store_true")
+    a = ap.parse_args()
+    if not a.base_only and not (a.base and a.contract_json):
+        ap.error("--base and --contract-json are required unless --base-only")
+
+    report, ok = [], True
+
+    def rule(passed, name, detail=""):
+        nonlocal ok
+        ok &= passed
+        report.append(f"{'PASS' if passed else 'FAIL'}: {name}" + (f"\n{detail}" if detail else ""))
+
+    # --- fresh clone at sha
+    shutil.rmtree(a.workdir, ignore_errors=True)
+    os.makedirs(os.path.dirname(a.workdir), exist_ok=True)
+    subprocess.run(["git", "clone", "-q", "--local", "--no-checkout", a.repo, a.workdir], check=True)
+    clone = os.path.realpath(a.workdir)
+    git("checkout", "-q", "--detach", a.sha, cwd=clone)
+    git("remote", "remove", "origin", cwd=clone)
+    with open(os.path.join(clone, ".git", "info", "exclude"), "a") as f:
+        f.write("\n.venv/\n.env\n.tmp/\n*.egg-info/\n")
+    shutil.copy(a.env_file, os.path.join(clone, ".env"))
+    os.makedirs(os.path.join(clone, ".tmp"), exist_ok=True)
+
+    contract = json.load(open(a.contract_json)) if a.contract_json else None
+    if not a.base_only:
+        # --- diff scope, decided by git alone
+        paths = [p for p in git("diff", "--name-only", f"{a.base}...{a.sha}", cwd=clone).split("\n") if p]
+        rule(bool(paths), "diff vs base is non-empty", "" if paths else f"no changes in {a.base[:10]}...{a.sha[:10]}")
+        owned = {p[: -len(" (NEW)")] if p.endswith(" (NEW)") else p for p in contract["owned"]}
+        outside = [p for p in paths if p not in owned]
+        rule(not outside, "every changed path is in `owned`", "\n".join(f"  not owned: {p}" for p in outside))
+        hit = [p for p in paths if any(fnmatch.fnmatchcase(p, g) for g in contract["protected"])]
+        rule(not hit, "no changed path matches `protected`", "\n".join(f"  protected: {p}" for p in hit))
+        if not ok:
+            report.append("(stopped before installing or running the diff's code)")
+            return finish(report, ok)
+
+    # --- fresh .venv (unsandboxed: needs PyPI)
+    rc, out = run(VENV_CMD, cwd=clone, shell=True)
+    rule(rc == 0, f"fresh .venv ({VENV_CMD}) exits 0", "" if rc == 0 else tail(out))
+    if rc != 0:
+        return finish(report, ok)
+
+    # --- full suite, sandboxed
+    rc, out = sandboxed(clone, ".venv/bin/pytest -q", a.base)
+    rule(rc == 0, f"`pytest -q` exits 0 (rc={rc})", tail(out) if rc else "")
+    if not a.base_only:
+        for c in contract["criteria"]:
+            if c["kind"] == "mechanical":
+                rc, out = sandboxed(clone, c["check"], a.base)
+                rule(rc == 0, f"{c['id']} check exits 0 (rc={rc}): {c['check']}", tail(out) if rc else "")
+    return finish(report, ok)
+
+
+def finish(report, ok):
+    print("\n".join(report))
+    print("GATE: " + ("PASS" if ok else "FAIL"))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

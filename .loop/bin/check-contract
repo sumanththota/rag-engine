@@ -1,0 +1,133 @@
+#!/usr/bin/env -S uv run --script --quiet
+# /// script
+# dependencies = ["pyyaml"]
+# ///
+"""Contract check (RULES.md T1 step 3).
+
+  check-contract --issue HUMAN.md --contract CONTRACT.md --repo DIR --base SHA
+
+Prints every failure, one per line. Exit 0 = all hold, 1 = any fails.
+"""
+import argparse
+import fnmatch
+import re
+import subprocess
+import sys
+
+import looplib as L
+
+BROWSER = re.compile(
+    r"playwright|selenium|puppeteer|webdriver|chromium|chrome|firefox|safari|browser|headless",
+    re.I)
+CRITERION_KEYS = {
+    L.BEHAVIORAL: {"id", "from_issue", "kind", "verify_via", "mutation_target"},
+    L.MECHANICAL: {"id", "from_issue", "kind", "check"},
+}
+BUDGET_KEYS = {"max_rounds", "max_verify_rounds", "wall_clock_min"}
+
+
+def is_str_list(v):
+    return isinstance(v, list) and all(isinstance(x, str) and x.strip() for x in v)
+
+
+def blob_at(repo, base, path):
+    r = subprocess.run(["git", "-C", repo, "cat-file", "-t", f"{base}:{path}"],
+                       capture_output=True, text=True)
+    return r.returncode == 0 and r.stdout.strip() == "blob"
+
+
+def check(human, contract_part, repo, base):
+    errs = []
+    try:
+        c = L.load_contract(contract_part)
+    except Exception as e:  # noqa: BLE001
+        return [f"schema: YAML does not parse: {e}"]
+    if not isinstance(c, dict):
+        return ["schema: contract is not a mapping"]
+
+    # --- schema
+    keys = {"owned", "protected", "oracles", "criteria", "budgets"}
+    if set(c) != keys:
+        errs.append(f"schema: top-level keys must be exactly {sorted(keys)}, got {sorted(c)}")
+    for k in ("owned", "protected", "oracles"):
+        if not is_str_list(c.get(k)):
+            errs.append(f"schema: `{k}` must be a list of non-empty strings")
+    if is_str_list(c.get("owned")) and not c["owned"]:
+        errs.append("schema: `owned` is empty")
+    b = c.get("budgets")
+    if not (isinstance(b, dict) and set(b) == BUDGET_KEYS
+            and all(isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in b.values())):
+        errs.append(f"schema: `budgets` must have exactly {sorted(BUDGET_KEYS)}, positive ints")
+    crits = c.get("criteria")
+    if not (isinstance(crits, list) and crits and all(isinstance(x, dict) for x in crits)):
+        errs.append("schema: `criteria` must be a non-empty list of mappings")
+        crits = []
+    ids = set()
+    for i, cr in enumerate(crits, 1):
+        cid = cr.get("id")
+        name = cid if isinstance(cid, str) else f"criteria[{i}]"
+        if not (isinstance(cid, str) and re.fullmatch(r"C[1-9]\d*", cid)):
+            errs.append(f"schema: {name}: `id` must be C<n>")
+        elif cid in ids:
+            errs.append(f"schema: {name}: duplicate id")
+        ids.add(cid)
+        fi = cr.get("from_issue")
+        if not (isinstance(fi, int) and not isinstance(fi, bool) and fi >= 1):
+            errs.append(f"schema: {name}: `from_issue` must be an int >= 1")
+        kind = cr.get("kind")
+        if kind not in CRITERION_KEYS:
+            errs.append(f"schema: {name}: `kind` must be behavioral or mechanical")
+            continue
+        need = CRITERION_KEYS[kind]
+        if set(cr) != need:
+            errs.append(f"schema: {name}: {kind} needs exactly {sorted(need)}, got {sorted(cr)}")
+        for k in need - {"id", "from_issue", "kind"}:
+            if not (isinstance(cr.get(k), str) and cr[k].strip()):
+                errs.append(f"schema: {name}: `{k}` must be a non-empty string")
+        # --- no browser
+        text = " ".join(str(cr.get(k, "")) for k in ("verify_via", "mutation_target", "check"))
+        if BROWSER.search(text):
+            errs.append(f"browser: {name} mentions `{BROWSER.search(text).group(0)}`")
+
+    # --- coverage
+    ac = L.acceptance_criteria(human)
+    if not ac:
+        errs.append("coverage: issue has no list items under `## Acceptance criteria`")
+    covered = {cr.get("from_issue") for cr in crits}
+    for n in range(1, len(ac) + 1):
+        if n not in covered:
+            errs.append(f"coverage: issue criterion {n} ({ac[n - 1][:80]!r}) has no contract criterion")
+    for n in sorted(x for x in covered if isinstance(x, int) and not 1 <= x <= len(ac)):
+        errs.append(f"coverage: from_issue {n} is out of range (issue has {len(ac)} criteria)")
+
+    # --- paths
+    owned = c.get("owned") if is_str_list(c.get("owned")) else []
+    oracles = c.get("oracles") if is_str_list(c.get("oracles")) else []
+    for p in owned:
+        if not p.endswith(" (NEW)") and not blob_at(repo, base, p):
+            errs.append(f"owned: `{p}` is not a file at base {base[:10]} (new files end in ` (NEW)`)")
+    protected = c.get("protected") if is_str_list(c.get("protected")) else []
+    for p in oracles:
+        if not blob_at(repo, base, p):
+            errs.append(f"oracles: `{p}` is not a file at base {base[:10]}")
+        if not any(fnmatch.fnmatchcase(p, g) for g in protected):
+            errs.append(f"oracles: `{p}` matches no `protected` glob")
+    return errs
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--issue", required=True)
+    ap.add_argument("--contract", required=True)
+    ap.add_argument("--repo", required=True)
+    ap.add_argument("--base", required=True)
+    a = ap.parse_args()
+    errs = check(open(a.issue).read(), open(a.contract).read(), a.repo, a.base)
+    for e in errs:
+        print(e)
+    print("CONTRACT-CHECK: " + ("FAIL" if errs else "PASS"))
+    return 1 if errs else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,15 @@
+#!/usr/bin/env -S uv run --script --quiet
+# /// script
+# dependencies = ["pyyaml"]
+# ///
+"""Canonical contract (stdin) -> JSON (stdout). Exit 1 if it doesn't parse."""
+import json
+import sys
+
+import looplib as L
+
+try:
+    print(json.dumps(L.load_contract(sys.stdin.read())))
+except Exception as e:  # noqa: BLE001 — any parse failure is "doesn't parse"
+    print(f"contract YAML does not parse: {e}", file=sys.stderr)
+    sys.exit(1)

@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""Verifier output shape check (RULES.md T3 step 3).
+
+  parse-verdict --contract-json C.json < verdict.txt
+
+Line 1 exactly PASS or NEEDS_WORK; then exactly one `C<n>: PASS|FAIL` line per behavioral
+criterion, in contract order. PASS requires every line PASS. Evidence follows, free-form.
+Exit 0 + JSON {"verdict", "fails"} on stdout; exit 1 + reason on stdout otherwise.
+"""
+import argparse
+import json
+import re
+import sys
+
+
+def parse(text, contract):
+    lines = [l.rstrip() for l in text.replace("\r\n", "\n").split("\n")]
+    want = [c["id"] for c in contract["criteria"] if c["kind"] == "behavioral"]
+    if not lines or lines[0] not in ("PASS", "NEEDS_WORK"):
+        return None, f"line 1 must be exactly PASS or NEEDS_WORK, got {lines[0][:80]!r}"
+    fails = []
+    for i, cid in enumerate(want, 2):
+        got = lines[i - 1] if len(lines) >= i else ""
+        m = re.fullmatch(r"(C\d+): (PASS|FAIL)", got)
+        if not m or m.group(1) != cid:
+            return None, f"line {i} must be `{cid}: PASS|FAIL`, got {got[:80]!r}"
+        if m.group(2) == "FAIL":
+            fails.append(cid)
+    nxt = lines[len(want) + 1] if len(lines) > len(want) + 1 else ""
+    if re.fullmatch(r"C\d+: (PASS|FAIL)", nxt):
+        return None, f"line {len(want) + 2}: extra verdict line {nxt!r} (behavioral: {want})"
+    if lines[0] == "PASS" and fails:
+        return None, f"PASS with failing criteria {fails}"
+    return {"verdict": lines[0], "fails": fails}, None
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--contract-json", required=True)
+    a = ap.parse_args()
+    result, err = parse(sys.stdin.read(), json.load(open(a.contract_json)))
+    if err:
+        print("VERDICT-MALFORMED: " + err)
+        return 1
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
