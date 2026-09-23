@@ -1,4 +1,4 @@
-"""Auth tests — Feature Loop ticket 9 (.loop/9/LOOP.md).
+"""Auth tests — issue #9.
 
 AuthStore tests hit the real dev Postgres at localhost:5433 (same DSN as
 tests/test_traces.py), per CONVENTIONS.md §7: a users/auth_identities write
@@ -155,7 +155,7 @@ def test_verify_session_cookie_rejects_garbage():
 
 
 def test_set_session_cookie_attributes_match_spec():
-    # LOOP.md's Context: "Cookie: itsdangerous-signed, HttpOnly, SameSite=Lax,
+    # Issue #9 spec: "Cookie: itsdangerous-signed, HttpOnly, SameSite=Lax,
     # Secure unless APP_ENV=development, sliding 30-day idle expiry."
     from starlette.responses import Response
 

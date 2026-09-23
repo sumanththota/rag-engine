@@ -1,4 +1,4 @@
-"""Login UI tests — Feature Loop ticket 18 (.loop/18/LOOP.md).
+"""Login UI tests — issue #18.
 
 Contract-level tests covering:
 - GET /me returns {"user": null} when logged out, {"user": {...}} when logged in

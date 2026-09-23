@@ -6,6 +6,3 @@ __pycache__/
 logs/
 .claude/worktrees/
 .DS_Store
-# driver run artifacts — protocol state lives in GitHub labels and .loop/<id>/, not here
-.loop/drive.log
-.loop/.ticks/

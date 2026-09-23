@@ -98,41 +98,19 @@ tokens via SSE).
 
 ## 7. Agent-loop testing
 
-- When tickets are implemented in parallel (separate git worktrees against
-  the one shared dev Postgres — see `tests/test_traces.py`'s rationale for
-  hitting a real DB), any new hardcoded test literal (email, id) is
-  prefixed with the issue number: `test-9-...`, `test-10-...`. Same
-  convention as the existing tests, just namespaced, so two parallel
-  suites never collide on a shared table's unique constraint (e.g.
+- Hardcoded test literals (email, id) are prefixed with the issue number:
+  `test-9-...`, `test-10-...`. Tests hit the one shared dev Postgres (see
+  `tests/test_traces.py`'s rationale for hitting a real DB), so namespacing
+  keeps suites from colliding on a shared table's unique constraint (e.g.
   `users.email`).
-- An implementing agent's own "tests pass" is not the acceptance signal.
-  A ticket's acceptance criteria are re-checked by an independent run
-  after the agent's worktree is done, not taken on the agent's report.
-- Agents never boot the shared dev server on `:8080` — it is one process
-  shared across every parallel worktree. Verify through `pytest` only,
-  spinning up a throwaway test instance on an ephemeral port where a
-  criterion actually needs a live server.
-- A worktree carries tracked files only: `.worktreeinclude` copies `.env`
-  in (gitignored files matching its patterns; tracked files are never
-  duplicated), but `.venv` is never copied — its absolute paths break.
-  Rebuild it in the worktree before running anything:
-  `python -m venv .venv && .venv/bin/pip install -e ".[dev]"` (same as the
-  README's main setup). `pytest -q` should be green on that freshly-built
-  venv before the agent starts its own work.
-  CHECK (found live on #12, orchestrator-created verifier worktree,
-  2026-09-20): `.worktreeinclude`'s `.env` copy is NOT automatic for a
-  worktree made with a plain `git worktree add` — no `WorktreeCreate` hook
-  exists in this repo, and there is no other mechanism that runs it, so a
-  worktree the orchestrator creates directly (rather than one an isolated
-  subagent spawn creates for itself) starts with neither `.env` nor a venv.
-  Copy `.env` and rebuild the venv by hand in every orchestrator-created
-  worktree before handing it to an agent or running tests in it yourself —
-  do not assume `.worktreeinclude` fired just because it's declared.
-- `pyproject.toml` now has a `[build-system]` table and `[tool.setuptools]`
-  packages config (added during ticket #11, approved by a human — see
-  `.loop/11/journal.md`). The `PYTHONPATH=.` workaround noted in earlier
-  tickets' retros is no longer required going forward; existing tests that
-  still set it are unaffected by the change.
+- An agent's own "tests pass" is not the acceptance signal. Re-check the
+  issue's acceptance criteria against the diff before closing it out.
+- Agents never boot the shared dev server on `:8080`. Verify through
+  `pytest` only, spinning up a throwaway test instance on an ephemeral port
+  where a criterion actually needs a live server.
+- `.venv` is never portable (absolute paths). In a fresh checkout or
+  sandbox, rebuild it first: `uv sync --extra dev` (or the README's main setup), and
+  confirm `pytest -q` is green before starting work.
 - Every new test file gets its own setup/cleanup scoped to its own fixture
   prefix. Do not rely on another test's teardown or ordering.
   CHECK: run the new test file alone, and filtered with -k, before claiming
