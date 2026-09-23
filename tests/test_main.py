@@ -1745,3 +1745,74 @@ async def test_38_row_tags_and_questions_are_escaped():
     assert "theme:&lt;i&gt;x&lt;/i&gt;" in row
     assert "&lt;script&gt;test-38&lt;/script&gt;" in row
     assert "<b>test-38" not in resp.text and "<script>test-38" not in resp.text
+
+
+# ---- Issue 40: responsive layout for narrow screens ----
+#
+# No browser in the test suite, so these pin the page's styles and drawer
+# markup; the 375px width/no-scroll criteria were checked once in headless
+# Chromium (see the #40 commit message).
+
+
+def _style_40(body: str) -> tuple[str, str]:
+    """(desktop rules, narrow-screen rules) from the page's <style> block."""
+    style = body.split("<style>", 1)[1].split("</style>", 1)[0]
+    desktop, narrow = style.split("@media (max-width: 900px)", 1)
+    return desktop, narrow
+
+
+def _rule_40(css: str, selector: str) -> str:
+    match = re.search(rf"(?:^|\n)\s*{re.escape(selector)} \{{([^}}]*)\}}", css)
+    assert match is not None, f"no rule for {selector!r}"
+    return match.group(1)
+
+
+async def test_40_narrow_screens_stack_the_three_panes():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get(f"/traces/{fx.fail_id}")
+
+    _, narrow = _style_40(resp.text)
+    assert "flex-direction: column" in _rule_40(narrow, "main.board")
+    assert "width: 100%" in _rule_40(narrow, ".sidebar")
+    assert "width: 100%" in _rule_40(narrow, ".right-pane")
+    # The detail sits before the Annotation panel in the markup, so stacking
+    # puts the panel below it.
+    assert resp.text.index('<div class="middle-pane">') < resp.text.index('<div class="right-pane">')
+
+
+async def test_40_trace_list_is_a_collapsible_drawer():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            detail = await client.get(f"/traces/{fx.fail_id}")
+            empty = await client.get("/traces", params={"q": "test-40 matches nothing"})
+
+    toggle = re.search(r'<input type="checkbox" id="list-toggle" class="list-toggle"( checked)?>', detail.text)
+    assert toggle is not None and toggle.group(1) is None  # collapsed while reviewing a Trace
+    assert '<label for="list-toggle" class="list-toggle-btn">' in detail.text
+    # With no Trace open (nothing matches), the list's message is the page's
+    # content, so the drawer starts open.
+    assert '<input type="checkbox" id="list-toggle" class="list-toggle" checked>' in empty.text
+    sidebar = detail.text.split('<div class="middle-pane">', 1)[0]
+    assert sidebar.index('id="list-toggle"') < sidebar.index('<div class="sidebar-body">')
+
+    _, narrow = _style_40(detail.text)
+    assert "display: none" in _rule_40(narrow, ".sidebar-body")
+    assert "display: block" in _rule_40(narrow, ".list-toggle:checked ~ .sidebar-body")
+
+
+async def test_40_desktop_layout_is_unchanged():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get(f"/traces/{fx.fail_id}")
+
+    desktop, _ = _style_40(resp.text)
+    assert "width: 300px" in _rule_40(desktop, ".sidebar")
+    assert "width: 280px" in _rule_40(desktop, ".right-pane")
+    assert "display: flex; height: calc(100vh - 53px)" in _rule_40(desktop, "main.board")
+    # The drawer wrapper and toggle are invisible to the desktop layout.
+    assert "display: contents" in _rule_40(desktop, ".sidebar-body")
+    assert "display: none" in _rule_40(desktop, ".list-toggle, .list-toggle-btn")

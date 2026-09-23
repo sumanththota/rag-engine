@@ -52,6 +52,9 @@ _TRACES_PAGE_STYLE = """
 
     /* left pane: thread list */
     .sidebar { width: 300px; flex-shrink: 0; background: #fff; border-right: 1px solid #e2e5ec; display: flex; flex-direction: column; }
+    /* drawer wrapper + toggle: only take effect below 900px */
+    .sidebar-body { display: contents; }
+    .list-toggle, .list-toggle-btn { display: none; }
     .sidebar-header { padding: 0.9rem 1rem; border-bottom: 1px solid #eee; }
     .sidebar-title { font-size: 0.85rem; font-weight: 700; }
     .count-badge { background: #eef0fb; color: #4361ee; border-radius: 99px; padding: 0.05rem 0.5rem; font-size: 0.7rem; margin-left: 0.4rem; }
@@ -121,6 +124,20 @@ _TRACES_PAGE_STYLE = """
     .panel-nav { display: flex; justify-content: space-between; margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid #eee; }
     .panel-nav a, .panel-nav span.disabled { font-size: 0.82rem; text-decoration: none; color: #4361ee; }
     .panel-nav span.disabled { color: #ccc; }
+
+    /* narrow screens: stack the panes, the Trace list becomes a drawer */
+    @media (max-width: 900px) {
+      main.board { flex-direction: column; height: auto; overflow: visible; }
+      .sidebar { width: 100%; border-right: none; border-bottom: 1px solid #e2e5ec; }
+      .list-toggle-btn { display: block; padding: 0.7rem 1rem; font-size: 0.85rem; font-weight: 700; color: #4361ee; cursor: pointer; }
+      .list-toggle-btn::before { content: "▸ "; }
+      .list-toggle:checked ~ .list-toggle-btn::before { content: "▾ "; }
+      .sidebar-body { display: none; }
+      .list-toggle:checked ~ .sidebar-body { display: block; }
+      .thread-list { max-height: 60vh; }
+      .middle-pane { overflow: visible; padding: 1rem; min-width: 0; overflow-wrap: anywhere; }
+      .right-pane { width: 100%; border-left: none; border-top: 1px solid #e2e5ec; overflow: visible; }
+    }
   </style>
 """
 
@@ -398,8 +415,15 @@ def _sidebar_html(
             )
         list_html = "".join(items)
 
+    # On narrow screens the list collapses into a drawer (CSS-only, via the
+    # checkbox); it starts open when no Trace is selected, since the list is
+    # then the page's content.
+    checked = "" if selected_id else " checked"
     return (
         '<div class="sidebar">'
+        f'<input type="checkbox" id="list-toggle" class="list-toggle"{checked}>'
+        '<label for="list-toggle" class="list-toggle-btn">Traces list</label>'
+        '<div class="sidebar-body">'
         '<div class="sidebar-header">'
         '<span class="sidebar-title">Traces</span>'
         f"{_status_filters_html(counts, trace_filter)}"
@@ -407,6 +431,7 @@ def _sidebar_html(
         f"{pager_html}"
         "</div>"
         f'<div class="thread-list">{list_html}</div>'
+        "</div>"
         "</div>"
     )
 
