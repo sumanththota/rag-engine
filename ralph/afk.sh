@@ -31,9 +31,6 @@ fi
 # jq filter to extract streaming text from assistant messages
 stream_text='select(.type == "assistant").message.content[]? | select(.type == "text").text // empty | gsub("\n"; "\r\n") | . + "\r\n\n"'
 
-# jq filter to extract final result
-final_result='select(.type == "result").result // empty'
-
 for ((i=1; i<=$1; i++)); do
   tmpfile=$(mktemp)
   trap "rm -f $tmpfile" EXIT
@@ -58,10 +55,14 @@ for ((i=1; i<=$1; i++)); do
   | tee "$tmpfile" \
   | jq --unbuffered -rj "$stream_text"
 
-  result=$(jq -r "$final_result" "$tmpfile")
+  ralph/apply-outcome.sh
+  ralph/promote.sh
 
-  if [[ "$result" == *"<promise>NO MORE TASKS</promise>"* ]]; then
-    echo "Ralph complete after $i iterations."
+  # The host decides when to stop, not the agent: it only sees issues that are
+  # ready now, not the slices its own work just unblocked.
+  remaining=$(gh issue list --label ready-for-agent --state open --json number --jq length)
+  if [[ "$remaining" == "0" ]]; then
+    echo "Ralph complete after $i iterations: nothing is ready-for-agent."
     exit 0
   fi
 done
