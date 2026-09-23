@@ -19,6 +19,7 @@ vocabulary — this file is implementation conventions, not a glossary.
 | `app/rag.py` | `RagService` — orchestrator: ingest, query-rewrite, retrieve, prompt build. `RagError`/`RewriteError`. |
 | `app/logging_utils.py` | JSON log formatter + per-request `trace_id` contextvar. |
 | `app/main.py` | FastAPI app: routes, SSE streaming, HTTP-layer error classification. |
+| `app/traces_ui.py` | Trace review board: HTML rendering + `/traces` routes via `build_router(trace_store)`, mounted by `create_app()`. |
 | `app/cli/eval.py` | Offline batch-eval harness → `docs/experiments.jsonl`, viewable at `/dashboard`. |
 | `app/cli/ingest.py` | CLI ingestion entrypoint. |
 

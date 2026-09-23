@@ -6,3 +6,4 @@ __pycache__/
 logs/
 .claude/worktrees/
 .DS_Store
+ralph/.outcome.json

@@ -6,7 +6,7 @@ The `ready-for-agent` label is the gate. Only issues carrying it are yours to wo
 
 You've also been passed a file containing the last few commits. Review these to understand what work has been done.
 
-If all `ready-for-agent` tasks are complete, output <promise>NO MORE TASKS</promise>.
+If no `ready-for-agent` issue is left to work on, stop without changing anything.
 
 # TASK SELECTION
 
@@ -52,15 +52,15 @@ Make a git commit. The commit message must:
 
 # THE ISSUE
 
-If the task is complete, move the issue to done:
+You have no GitHub credentials: never run `gh`. After committing, write `ralph/.outcome.json` (gitignored, do not commit it); the host applies it to GitHub:
 
-`gh issue edit <number> --remove-label ready-for-agent --add-label agent:done`
+```json
+{"issue": <number>, "done": true, "note": "<what was done, what is left>"}
+```
 
-If the task is not complete, add a note to the issue with what was done:
-
-`gh issue comment <number> --body "<what was done, what is left>"`
-
-Leave the `ready-for-agent` label in place if the task is not complete.
+- `done: true` moves the issue to `agent:done`. Set it only when every acceptance criterion is met.
+- `done: false` leaves `ready-for-agent` in place so the next iteration continues it.
+- `note` is posted as an issue comment. Always include one.
 
 # FINAL RULES
 

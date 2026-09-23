@@ -71,6 +71,64 @@ class AnnotationStatus(str, Enum):
     FAIL = "FAIL"
 
 
+class TraceStatusFilter(str, Enum):
+    """Which Traces the Trace list shows, by Annotation status. The value is
+    the `?status=` query parameter; unknown values parse as ALL."""
+
+    ALL = "all"
+    UNANNOTATED = "unannotated"
+    PASS = "pass"
+    FAIL = "fail"
+
+    @classmethod
+    def parse(cls, raw: str | None) -> "TraceStatusFilter":
+        try:
+            return cls((raw or "").strip().lower())
+        except ValueError:
+            return cls.ALL
+
+
+class TraceFilter(BaseModel):
+    """Which Traces the Trace list shows: an Annotation status, an exact
+    Annotation tag and a case-insensitive question search, all of which
+    must match. None means that part doesn't filter."""
+
+    status: TraceStatusFilter = TraceStatusFilter.ALL
+    tag: str | None = None
+    q: str | None = None
+
+    @classmethod
+    def parse(cls, status: str | None, tag: str | None, q: str | None) -> "TraceFilter":
+        """From raw query parameters: blank tag/q don't filter."""
+        return cls(
+            status=TraceStatusFilter.parse(status),
+            tag=(tag or "").strip() or None,
+            q=(q or "").strip() or None,
+        )
+
+
+# SQL predicate for a TraceFilter, bound as three params (status value, tag,
+# q) starting at $first; shared by list_recent(), count() and neighbors() so
+# Prev/Next stays inside the filtered list. strpos() over lower() rather than
+# ILIKE, so % and _ in the search text match literally.
+def _filter_sql(first: int) -> str:
+    status, tag, q = (f"${first + i}" for i in range(3))
+    return f"""
+    CASE {status}::text
+        WHEN 'unannotated' THEN status IS NULL
+        WHEN 'pass' THEN status = 'PASS'
+        WHEN 'fail' THEN status = 'FAIL'
+        ELSE true
+    END
+    AND ({tag}::text IS NULL OR {tag}::text = ANY(tags))
+    AND ({q}::text IS NULL OR strpos(lower(question), lower({q}::text)) > 0)
+"""
+
+
+def _filter_params(trace_filter: TraceFilter) -> tuple[str, str | None, str | None]:
+    return trace_filter.status.value, trace_filter.tag, trace_filter.q
+
+
 class TraceSummary(BaseModel):
     """One row of the GET /traces thread list — no steps payload, since the
     list view only needs enough to pick a Trace to open."""
@@ -79,6 +137,7 @@ class TraceSummary(BaseModel):
     created_at: datetime
     question: str
     status: str | None = None
+    tags: list[str] = []
 
 
 class TraceDetail(BaseModel):
@@ -95,17 +154,36 @@ class TraceDetail(BaseModel):
 
 
 class TraceCounts(BaseModel):
-    """Total vs. unannotated Trace counts, for the thread list's filter bar."""
+    """Table-wide Trace counts per Annotation status, for the Trace list's
+    status filter bar."""
 
     total: int
     unannotated: int
+    passed: int
+    failed: int
+
+    def for_filter(self, status_filter: TraceStatusFilter) -> int:
+        return {
+            TraceStatusFilter.ALL: self.total,
+            TraceStatusFilter.UNANNOTATED: self.unannotated,
+            TraceStatusFilter.PASS: self.passed,
+            TraceStatusFilter.FAIL: self.failed,
+        }[status_filter]
+
+
+class TagCount(BaseModel):
+    """One distinct Annotation tag and how many Traces carry it, for the
+    Annotation panel's tag suggestions."""
+
+    tag: str
+    count: int
 
 
 class TraceNeighbors(BaseModel):
     """The trace_ids adjacent to a Trace in thread-list order (created_at
     DESC), for the detail page's Prev/Next navigation. None at either end
     of the list, or when the current trace no longer matches the active
-    filter (e.g. it was just annotated out of an unannotated-only view)."""
+    TraceFilter (e.g. it was just annotated out of the unannotated view)."""
 
     prev_id: str | None = None
     next_id: str | None = None
@@ -164,56 +242,98 @@ class TraceStore:
         except (*_DB_ERRORS, TypeError, ValueError) as e:
             raise TraceError(f"write failed for trace_id={trace_id!r}: {e}") from e
 
-    async def list_recent(self, limit: int = 50, unannotated_only: bool = False) -> list[TraceSummary]:
+    async def list_recent(
+        self, limit: int = 50, offset: int = 0, trace_filter: TraceFilter | None = None
+    ) -> list[TraceSummary]:
+        trace_filter = trace_filter or TraceFilter()
         try:
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(
-                    """
-                    SELECT trace_id, created_at, question, status
+                    f"""
+                    SELECT trace_id, created_at, question, status, tags
                     FROM traces
-                    WHERE (NOT $2 OR status IS NULL)
+                    WHERE {_filter_sql(3)}
                     ORDER BY created_at DESC, trace_id DESC
-                    LIMIT $1
+                    LIMIT $1 OFFSET $2
                     """,
                     limit,
-                    unannotated_only,
+                    offset,
+                    *_filter_params(trace_filter),
                 )
         except _DB_ERRORS as e:
             raise TraceError(f"list_recent failed: {e}") from e
         try:
-            return [TraceSummary(**dict(row)) for row in rows]
+            return [TraceSummary(**{**dict(row), "tags": list(row["tags"])}) for row in rows]
         except (ValidationError, TypeError) as e:
             raise TraceError(f"list_recent failed to parse rows: {e}") from e
+
+    async def count(self, trace_filter: TraceFilter | None = None) -> int:
+        """How many Traces match `trace_filter` — the Trace list's
+        pagination total (unlike counts(), which is table-wide)."""
+        trace_filter = trace_filter or TraceFilter()
+        try:
+            async with self._pool.acquire() as conn:
+                return await conn.fetchval(
+                    f"SELECT COUNT(*) FROM traces WHERE {_filter_sql(1)}",
+                    *_filter_params(trace_filter),
+                )
+        except _DB_ERRORS as e:
+            raise TraceError(f"count failed: {e}") from e
 
     async def counts(self) -> TraceCounts:
         try:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    "SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status IS NULL) AS unannotated FROM traces"
+                    """
+                    SELECT
+                        COUNT(*) AS total,
+                        COUNT(*) FILTER (WHERE status IS NULL) AS unannotated,
+                        COUNT(*) FILTER (WHERE status = 'PASS') AS passed,
+                        COUNT(*) FILTER (WHERE status = 'FAIL') AS failed
+                    FROM traces
+                    """
                 )
         except _DB_ERRORS as e:
             raise TraceError(f"counts failed: {e}") from e
-        return TraceCounts(total=row["total"], unannotated=row["unannotated"])
+        return TraceCounts(**dict(row))
 
-    async def neighbors(self, trace_id: str, unannotated_only: bool = False) -> TraceNeighbors:
+    async def tag_counts(self) -> list[TagCount]:
+        """Distinct Annotation tags across the whole table, most-used first
+        (ties alphabetical) — table-wide, not just the visible Trace list."""
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT tag, COUNT(DISTINCT trace_id) AS count
+                    FROM traces, unnest(tags) AS tag
+                    GROUP BY tag
+                    ORDER BY count DESC, tag
+                    """
+                )
+        except _DB_ERRORS as e:
+            raise TraceError(f"tag_counts failed: {e}") from e
+        return [TagCount(**dict(row)) for row in rows]
+
+    async def neighbors(self, trace_id: str, trace_filter: TraceFilter | None = None) -> TraceNeighbors:
         """Prev/next trace_id in the same order as list_recent's WHERE/ORDER
         BY, so a filtered thread list's Next/Prev stays inside that filter."""
+        trace_filter = trace_filter or TraceFilter()
         try:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    """
+                    f"""
                     SELECT prev_id, next_id FROM (
                         SELECT
                             trace_id,
                             LAG(trace_id) OVER (ORDER BY created_at DESC, trace_id DESC) AS prev_id,
                             LEAD(trace_id) OVER (ORDER BY created_at DESC, trace_id DESC) AS next_id
                         FROM traces
-                        WHERE (NOT $2 OR status IS NULL)
+                        WHERE {_filter_sql(2)}
                     ) neighbors
                     WHERE trace_id = $1
                     """,
                     trace_id,
-                    unannotated_only,
+                    *_filter_params(trace_filter),
                 )
         except _DB_ERRORS as e:
             raise TraceError(f"neighbors failed for trace_id={trace_id!r}: {e}") from e
