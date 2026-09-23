@@ -47,6 +47,7 @@ for ((i=1; i<=$1; i++)); do
     "PROXY:host.docker.internal:localhost:$pg_port,proxyport=3128"
 
   docker sandbox run "$sandbox" -- \
+    --model sonnet \
     --verbose \
     --print \
     --output-format stream-json \
