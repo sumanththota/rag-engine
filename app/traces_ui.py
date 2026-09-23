@@ -108,6 +108,11 @@ _TRACES_PAGE_STYLE = """
     .tag-suggestions.prefixes .tag-suggestion { background: none; border: 1px dashed #4361ee; }
     .tag-suggestion .tag-count { color: #888; margin-left: 0.25rem; }
     .update-btn { margin-top: 0.9rem; width: 100%; background: #4361ee; color: #fff; border: none; border-radius: 6px; padding: 0.6rem; font-size: 0.85rem; cursor: pointer; }
+    .update-btn.save-next { margin-top: 0.5rem; background: #147a4a; }
+    .notice { border-radius: 6px; padding: 0.45rem 0.6rem; font-size: 0.8rem; margin-bottom: 0.75rem; }
+    .notice.saved { background: #e3f8ec; color: #147a4a; }
+    .notice.end { background: #fff4e0; color: #8a5a00; }
+    .shortcut-hint { font-size: 0.7rem; color: #999; margin-top: 0.75rem; }
     .panel-nav { display: flex; justify-content: space-between; margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid #eee; }
     .panel-nav a, .panel-nav span.disabled { font-size: 0.82rem; text-decoration: none; color: #4361ee; }
     .panel-nav span.disabled { color: #ccc; }
@@ -246,9 +251,10 @@ def _parse_page(raw: str | None) -> int:
         return 1
 
 
-def _list_qs(trace_filter: TraceFilter, page: int = 1) -> str:
+def _list_qs(trace_filter: TraceFilter, page: int = 1, notice: str | None = None) -> str:
     """Query string that carries the active filter (and page) onto a link;
     defaults are left out, so the unfiltered first page's URLs stay bare.
+    `notice` (one of _NOTICES) is only set on the annotate redirect.
     Not HTML-escaped: escape it when it goes into an attribute."""
     params = {}
     if trace_filter.status is not TraceStatusFilter.ALL:
@@ -259,6 +265,8 @@ def _list_qs(trace_filter: TraceFilter, page: int = 1) -> str:
         params["q"] = trace_filter.q
     if page > 1:
         params["page"] = str(page)
+    if notice:
+        params["notice"] = notice
     return f"?{urllib.parse.urlencode(params)}" if params else ""
 
 
@@ -418,12 +426,44 @@ def _tag_suggestions_html(tag_counts: list[TagCount]) -> str:
     return f'{used_html}<div class="tag-suggestions prefixes">{prefixes}</div>{_TAG_SUGGESTION_SCRIPT}'
 
 
+# `?notice=` values the annotate redirect sets, and the confirmation each shows.
+_NOTICES = {
+    "saved": "Saved.",
+    "end": "Saved. End of list — no more traces in this filter.",
+}
+
+# Review-loop shortcuts: P/F pick PASS/FAIL, J/K follow Next/Back and
+# Ctrl/Cmd+Enter is Save & next. None fire while typing in notes or tags.
+_REVIEW_SHORTCUTS_SCRIPT = """
+  <script id="review-shortcuts">
+    document.addEventListener("keydown", (e) => {
+      if (["note", "tags"].includes(document.activeElement && document.activeElement.id)) return;
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        const btn = document.getElementById("save-next");
+        btn.form.requestSubmit(btn);
+        return;
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const key = e.key.toLowerCase();
+      if (key === "p") document.getElementById("status-pass").checked = true;
+      else if (key === "f") document.getElementById("status-fail").checked = true;
+      else if (key === "j" || key === "k") {
+        const link = document.getElementById(key === "j" ? "nav-next" : "nav-prev");
+        if (link && link.href) window.location.href = link.href;
+      }
+    });
+  </script>
+"""
+
+
 def _annotation_panel_html(
     trace: TraceDetail,
     neighbors: TraceNeighbors,
     trace_filter: TraceFilter,
     page: int,
     tag_counts: list[TagCount],
+    notice: str | None = None,
 ) -> str:
     tags_value = html.escape(", ".join(trace.tags))
     note_value = html.escape(trace.note or "")
@@ -432,18 +472,24 @@ def _annotation_panel_html(
     annotate_url = f"/traces/{urllib.parse.quote(trace.trace_id)}/annotate{_list_qs(trace_filter, page)}"
 
     prev_html = (
-        f'<a href="{_trace_href(neighbors.prev_id, trace_filter, page)}">&larr; Back</a>'
+        f'<a id="nav-prev" href="{_trace_href(neighbors.prev_id, trace_filter, page)}">&larr; Back</a>'
         if neighbors.prev_id
-        else '<span class="disabled">&larr; Back</span>'
+        else '<span id="nav-prev" class="disabled">&larr; Back</span>'
     )
     next_html = (
-        f'<a href="{_trace_href(neighbors.next_id, trace_filter, page)}">Next &rarr;</a>'
+        f'<a id="nav-next" href="{_trace_href(neighbors.next_id, trace_filter, page)}">Next &rarr;</a>'
         if neighbors.next_id
-        else '<span class="disabled">Next &rarr;</span>'
+        else '<span id="nav-next" class="disabled">Next &rarr;</span>'
+    )
+    notice_html = (
+        f'<div class="notice {notice}" role="status">{html.escape(_NOTICES[notice])}</div>'
+        if notice in _NOTICES
+        else ""
     )
 
     return (
         '<div class="panel-title">Rate Conversation</div>'
+        f"{notice_html}"
         # The filter and page ride on the action's query string, not form fields:
         # the form's own `status` field is the Annotation's PASS/FAIL.
         f'<form method="post" action="{html.escape(annotate_url)}">'
@@ -459,8 +505,11 @@ def _annotation_panel_html(
         f'<input id="tags" type="text" name="tags" value="{tags_value}" autocomplete="off"/>'
         f"{_tag_suggestions_html(tag_counts)}"
         '<button type="submit" class="update-btn">Update Annotation</button>'
+        '<button type="submit" name="action" value="next" id="save-next" class="update-btn save-next">Save &amp; next</button>'
         "</form>"
         f'<div class="panel-nav">{prev_html}{next_html}</div>'
+        '<div class="shortcut-hint">P / F rate · J / K next / back · Ctrl/Cmd+Enter save &amp; next</div>'
+        f"{_REVIEW_SHORTCUTS_SCRIPT}"
     )
 
 
@@ -473,6 +522,7 @@ def _traces_page_html(
     selected: TraceDetail | None,
     neighbors: TraceNeighbors | None,
     tag_counts: list[TagCount] | None = None,
+    notice: str | None = None,
 ) -> str:
     """Renders the single 3-pane board (thread list / trace steps /
     annotation panel) — both GET /traces and GET /traces/{trace_id} share
@@ -493,7 +543,7 @@ def _traces_page_html(
     else:
         middle_html = _trace_detail_html(selected)
         panel_html = _annotation_panel_html(
-            selected, neighbors or TraceNeighbors(), trace_filter, page, tag_counts or []
+            selected, neighbors or TraceNeighbors(), trace_filter, page, tag_counts or [], notice
         )
         right_html = f'<div class="right-pane">{panel_html}</div>'
 
@@ -562,7 +612,7 @@ def build_router(trace_store: TraceStore) -> APIRouter:
 
     @router.get("/traces/{trace_id}")
     async def trace_detail(
-        trace_id: str, status: str = "all", tag: str = "", q: str = "", page: str = "1"
+        trace_id: str, status: str = "all", tag: str = "", q: str = "", page: str = "1", notice: str = ""
     ) -> HTMLResponse:
         # trace_id is the Trace being reviewed, so it's the natural scope for
         # trace_id_var here (spec story 17: correlate a Trace's review-UI
@@ -584,7 +634,7 @@ def build_router(trace_store: TraceStore) -> APIRouter:
                 return HTMLResponse("<p>Trace not found.</p>", status_code=404)
             return HTMLResponse(
                 _traces_page_html(
-                    traces, counts, trace_filter, page_number, total, trace, neighbors, tag_counts
+                    traces, counts, trace_filter, page_number, total, trace, neighbors, tag_counts, notice
                 )
             )
         finally:
@@ -608,7 +658,13 @@ def build_router(trace_store: TraceStore) -> APIRouter:
                 valid = [s.value for s in AnnotationStatus]
                 return PlainTextResponse(f"status must be one of {valid}", status_code=400)
 
+            save_and_next = form.get("action") == "next"
+
             try:
+                # Next is looked up before saving: the new Annotation can take
+                # this Trace out of the filter (e.g. Unannotated), and then it
+                # would have no place in the list to find its next from.
+                next_id = (await trace_store.neighbors(trace_id, trace_filter)).next_id if save_and_next else None
                 updated = await trace_store.annotate(trace_id, status, note, tags)
             except TraceError as err:
                 logger.warning("annotate failed err=%s", err, extra={"stage": "http"})
@@ -617,8 +673,12 @@ def build_router(trace_store: TraceStore) -> APIRouter:
             if not updated:
                 return HTMLResponse("<p>Trace not found.</p>", status_code=404)
 
+            if next_id:
+                target, notice = next_id, None
+            else:
+                target, notice = trace_id, "end" if save_and_next else "saved"
             return RedirectResponse(
-                url=f"/traces/{urllib.parse.quote(trace_id)}{_list_qs(trace_filter, page_number)}",
+                url=f"/traces/{urllib.parse.quote(target)}{_list_qs(trace_filter, page_number, notice)}",
                 status_code=303,
             )
         finally:

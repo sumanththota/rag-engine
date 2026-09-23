@@ -916,7 +916,7 @@ async def test_annotate_round_trip_persists_and_reflects_in_detail():
                 data={"status": "PASS", "note": "Looks correct.", "tags": "attendance, good"},
             )
             assert annotate_resp.status_code == 303
-            assert annotate_resp.headers["location"] == f"/traces/{trace_id}"
+            assert annotate_resp.headers["location"] == f"/traces/{trace_id}?notice=saved"
 
             detail_resp = await client.get(f"/traces/{trace_id}")
 
@@ -1135,7 +1135,7 @@ async def test_34_annotate_redirect_keeps_status_filter():
 
     assert action == f"/traces/{target}/annotate?status=unannotated"
     assert resp.status_code == 303
-    assert resp.headers["location"] == f"/traces/{target}?status=unannotated"
+    assert resp.headers["location"] == f"/traces/{target}?status=unannotated&notice=saved"
 
 
 async def test_34_old_unannotated_toggle_is_removed():
@@ -1492,7 +1492,7 @@ async def test_37_annotate_redirect_keeps_every_filter():
     assert _query(action) == expected
     assert resp.status_code == 303
     assert urllib.parse.urlsplit(resp.headers["location"]).path == f"/traces/{target}"
-    assert _query(resp.headers["location"]) == expected
+    assert _query(resp.headers["location"]) == {**expected, "notice": "saved"}
 
 
 async def test_37_pagination_shows_ranges_and_keeps_filters():
@@ -1561,3 +1561,103 @@ async def test_37_search_text_and_tag_are_escaped_when_echoed():
     sidebar = resp.text.split('<div class="middle-pane">', 1)[0]
     assert raw not in sidebar
     assert f'value="{html.escape(raw)}"' in sidebar
+
+
+def _annotate_action_39(body: str) -> str:
+    return html.unescape(re.search(r'<form method="post" action="([^"]+)"', body).group(1))
+
+
+async def test_39_save_and_next_saves_and_opens_the_next_trace_in_the_filter():
+    async with _IsolatedTraces() as fx:
+        target = fx.unannotated_ids[10]
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            detail = await client.get(f"/traces/{target}", params={"status": "unannotated"})
+            resp = await client.post(
+                _annotate_action_39(detail.text),
+                data={"status": "FAIL", "note": "test-39 note", "tags": "", "action": "next"},
+            )
+        saved = await fx.store.get(target)
+
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    # Newest first, so the next Trace is the one written just before.
+    assert urllib.parse.urlsplit(location).path == f"/traces/{fx.unannotated_ids[9]}"
+    assert _query(location) == {"status": "unannotated"}
+    assert saved.status == "FAIL"
+    assert saved.note == "test-39 note"
+
+
+async def test_39_save_and_next_preserves_status_tag_search_and_page():
+    filters = {"status": "unannotated", "tag": "test-39-t", "q": "parking", "page": "2"}
+    async with _IsolatedTraces() as fx:
+        for i in (1, 2, 3):
+            await _question_37(fx, fx.unannotated_ids[i], f"test-39 parking {i}")
+            await _tag_36(fx, fx.unannotated_ids[i], ["test-39-t"])
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            detail = await client.get(f"/traces/{fx.unannotated_ids[2]}", params=filters)
+            resp = await client.post(
+                _annotate_action_39(detail.text),
+                data={"status": "PASS", "note": "", "tags": "test-39-t", "action": "next"},
+            )
+
+    location = resp.headers["location"]
+    assert urllib.parse.urlsplit(location).path == f"/traces/{fx.unannotated_ids[1]}"
+    assert _query(location) == filters
+
+
+async def test_39_save_and_next_on_the_last_trace_saves_and_shows_end_of_list():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            detail = await client.get(f"/traces/{fx.fail_id}", params={"status": "fail"})
+            resp = await client.post(
+                _annotate_action_39(detail.text),
+                data={"status": "FAIL", "note": "test-39 last", "tags": "", "action": "next"},
+            )
+            landed = await client.get(resp.headers["location"])
+        saved = await fx.store.get(fx.fail_id)
+
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert urllib.parse.urlsplit(location).path == f"/traces/{fx.fail_id}"
+    assert _query(location) == {"status": "fail", "notice": "end"}
+    assert landed.status_code == 200
+    assert 'class="notice end"' in landed.text
+    assert "End of list" in landed.text
+    assert saved.note == "test-39 last"
+
+
+async def test_39_plain_save_shows_a_saved_confirmation():
+    async with _IsolatedTraces() as fx:
+        target = fx.unannotated_ids[0]
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            before = await client.get(f"/traces/{target}")
+            resp = await client.post(
+                _annotate_action_39(before.text), data={"status": "PASS", "note": "", "tags": ""}
+            )
+            landed = await client.get(resp.headers["location"])
+
+    assert resp.status_code == 303
+    assert urllib.parse.urlsplit(resp.headers["location"]).path == f"/traces/{target}"
+    assert _query(resp.headers["location"]) == {"notice": "saved"}
+    assert 'class="notice saved"' in landed.text
+    assert 'class="notice' not in before.text
+
+
+async def test_39_panel_has_save_and_next_and_keyboard_shortcuts():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get(f"/traces/{fx.unannotated_ids[10]}")
+
+    panel = resp.text.split('<div class="right-pane">', 1)[1]
+    assert re.search(r'<button type="submit" name="action" value="next"[^>]*>Save &amp; next</button>', panel)
+    assert 'id="nav-next"' in panel and 'id="nav-prev"' in panel
+    script = panel.split('<script id="review-shortcuts">', 1)[1].split("</script>", 1)[0]
+    for key in ('"p"', '"f"', '"j"', '"k"', '"Enter"', "ctrlKey", "metaKey"):
+        assert key in script
+    # Typing in the notes or tags fields never triggers a shortcut.
+    assert '["note", "tags"]' in script
