@@ -10,6 +10,7 @@ if [[ "$branch" == "master" || "$branch" == "main" || -z "$branch" ]]; then
   exit 1
 fi
 
+ralph/promote.sh
 
 issues=$(gh issue list --label ready-for-agent --state open --json number,title,body,comments --limit 50 2>/dev/null || echo "No issues found")
 commits=$(git log -n 5 --format="%H%n%ad%n%B---" --date=short 2>/dev/null || echo "No commits found")

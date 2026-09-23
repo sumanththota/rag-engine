@@ -2,7 +2,7 @@
 
 Open GitHub issues labelled `ready-for-agent` are provided at start of context as JSON. Parse them to understand the open issues. Each issue's `comments` contain notes left by previous iterations — read them.
 
-The `ready-for-agent` label is the gate. Only issues carrying it are yours to work on. Never work on an unlabelled issue.
+The `ready-for-agent` label is the gate. Only issues carrying it are yours to work on. Never work on an unlabelled issue. Never add `ready-for-agent` yourself: `ralph/promote.sh` promotes `ralph:queued` issues automatically once their blockers are done.
 
 You've also been passed a file containing the last few commits. Review these to understand what work has been done.
 

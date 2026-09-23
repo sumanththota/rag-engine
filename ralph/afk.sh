@@ -25,6 +25,8 @@ for ((i=1; i<=$1; i++)); do
   tmpfile=$(mktemp)
   trap "rm -f $tmpfile" EXIT
 
+  ralph/promote.sh
+
   commits=$(git log -n 5 --format="%H%n%ad%n%B---" --date=short 2>/dev/null || echo "No commits found")
   issues=$(gh issue list --label ready-for-agent --state open --json number,title,body,comments --limit 50 2>/dev/null || echo "No issues found")
   prompt=$(cat ralph/prompt.md)
