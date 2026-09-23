@@ -20,6 +20,7 @@ string that no longer applies.
 """
 
 import base64
+import html
 import json
 import logging
 import re
@@ -33,9 +34,9 @@ from app.embed import OllamaClient
 from app.llm import OpenAICompatibleClient
 from app.logging_utils import install_trace_id_filter, trace_id_var
 from app.main import create_app
-from app.rag import RagService
+from app.rag import RagService, RewriteOutcomeStatus
 from app.store import PostgresStore, SearchResult
-from app.traces import TraceStore
+from app.traces import GenerateStep, RetrieveStep, RewriteStep, TraceStore
 
 
 async def _unreachable_rag_service() -> RagService:
@@ -1147,3 +1148,139 @@ async def test_34_old_unannotated_toggle_is_removed():
     assert "Show unannotated" not in list_resp.text
     # The legacy parameter is ignored: same list as the default `all` view.
     assert _listed_trace_ids(legacy_resp.text) == _listed_trace_ids(list_resp.text)
+
+
+# ---- Issue 35: answer-first Trace detail ----
+#
+# Traces are written straight through TraceStore.write() with hand-built
+# Steps (not a driven chat turn) so each test controls chunk counts, empty
+# output and Step errors exactly. Ids are test-35-prefixed and deleted after.
+
+
+def _test_35_chunks(n: int) -> list[SearchResult]:
+    return [SearchResult(text=f"test-35 chunk {i:02d}", page=i, score=0.9 - i / 100) for i in range(n)]
+
+
+async def _render_35_detail(trace_id: str, steps: list, question: str = "test-35 question") -> str:
+    pool = await asyncpg.create_pool(dsn=_TRACES_DSN, min_size=0, max_size=2)
+    trace_store = TraceStore(pool)
+    await trace_store.ensure_schema()
+    try:
+        await trace_store.write(trace_id, question, steps)
+        app = _app_for(await _unreachable_rag_service(), trace_store=trace_store)
+        async with _async_client(app) as client:
+            resp = await client.get(f"/traces/{trace_id}")
+        assert resp.status_code == 200
+        return resp.text
+    finally:
+        await pool.execute("DELETE FROM traces WHERE trace_id = $1", trace_id)
+        await pool.close()
+
+
+def _test_35_steps(
+    n_chunks: int = 10,
+    output: str = "test-35 the answer",
+    prompt: str = "test-35 PROMPT BODY",
+    retrieve_error: str | None = None,
+    generate_error: str | None = None,
+    rewrite_status: RewriteOutcomeStatus = RewriteOutcomeStatus.RAN,
+) -> list:
+    return [
+        RewriteStep(status=rewrite_status, original_question="q", rewritten_query="test-35 rewritten"),
+        RetrieveStep(results=_test_35_chunks(n_chunks), error=retrieve_error),
+        GenerateStep(prompt=prompt, output=output, error=generate_error),
+    ]
+
+
+def _test_35_main_detail(body: str) -> str:
+    """The middle pane only, so sidebar text can't satisfy ordering asserts."""
+    return body.split('<div class="middle-pane">', 1)[1].split('<div class="right-pane">', 1)[0]
+
+
+async def test_35_answer_renders_before_chunks_and_prompt():
+    body = _test_35_main_detail(await _render_35_detail("test-35-order", _test_35_steps()))
+
+    answer_at = body.index("test-35 the answer")
+    assert answer_at < body.index("test-35 chunk 00")
+    assert answer_at < body.index("test-35 PROMPT BODY")
+    assert body.index("test-35 question") < answer_at
+    assert body.index("test-35 chunk 00") < body.index("test-35 PROMPT BODY")
+
+
+async def test_35_prompt_is_collapsed_and_shows_its_length():
+    prompt = "test-35 PROMPT BODY " * 10
+    body = _test_35_main_detail(await _render_35_detail("test-35-prompt", _test_35_steps(prompt=prompt)))
+
+    match = re.search(r'<details class="prompt"( open)?><summary>([^<]*)</summary>', body)
+    assert match is not None
+    assert match.group(1) is None  # not open by default
+    assert f"{len(prompt)} chars" in match.group(2)
+    assert body.index(match.group(0)) < body.index("test-35 PROMPT BODY")
+
+
+async def test_35_ten_chunks_show_three_and_collapse_seven():
+    body = _test_35_main_detail(await _render_35_detail("test-35-ten", _test_35_steps(n_chunks=10)))
+
+    match = re.search(r'<details class="more-chunks"( open)?><summary>show 7 more</summary>(.*?)</details>', body)
+    assert match is not None
+    assert match.group(1) is None
+    collapsed = match.group(2)
+    visible = body.replace(match.group(0), "")
+    for i in range(3):
+        assert f"test-35 chunk {i:02d}" in visible
+        assert f"test-35 chunk {i:02d}" not in collapsed
+    for i in range(3, 10):
+        assert f"test-35 chunk {i:02d}" in collapsed
+
+
+async def test_35_two_chunks_collapse_nothing():
+    body = _test_35_main_detail(await _render_35_detail("test-35-two", _test_35_steps(n_chunks=2)))
+
+    assert "more-chunks" not in body
+    assert "show 0 more" not in body
+    assert "test-35 chunk 00" in body and "test-35 chunk 01" in body
+
+
+async def test_35_empty_output_without_error_renders_marker():
+    body = _test_35_main_detail(await _render_35_detail("test-35-empty", _test_35_steps(output="")))
+
+    assert "(empty output)" in body
+
+
+async def test_35_step_errors_render_next_to_answer():
+    steps = _test_35_steps(
+        output="",
+        retrieve_error="test-35 retrieve boom",
+        generate_error="test-35 generate boom",
+        rewrite_status=RewriteOutcomeStatus.FAILED_FALLBACK,
+    )
+    body = _test_35_main_detail(await _render_35_detail("test-35-errors", steps))
+
+    first_chunk = body.index("test-35 chunk 00")
+    assert body.index("test-35 generate boom") < first_chunk
+    assert body.index("test-35 retrieve boom") < first_chunk
+    assert "failed_fallback" in body
+    # An error explains the empty output, so no "(empty output)" marker.
+    assert "(empty output)" not in body
+
+
+async def test_35_rewrite_step_is_a_single_status_line():
+    body = _test_35_main_detail(await _render_35_detail("test-35-rewrite", _test_35_steps()))
+
+    match = re.search(r'<div class="rewrite-line">(.*?)</div>', body)
+    assert match is not None
+    assert "ran" in match.group(1)
+    assert "test-35 rewritten" in match.group(1)
+    assert "<details" not in match.group(1)
+
+
+async def test_35_detail_text_stays_escaped():
+    steps = [
+        RetrieveStep(results=[SearchResult(text="<b>chunk</b>", page=1, score=0.5)]),
+        GenerateStep(prompt="<i>prompt</i>", output="<u>answer</u>"),
+    ]
+    body = await _render_35_detail("test-35-escape", steps, question="<s>question</s>")
+
+    for raw in ("<s>question</s>", "<u>answer</u>", "<b>chunk</b>", "<i>prompt</i>"):
+        assert raw not in body
+        assert html.escape(raw) in body

@@ -14,6 +14,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
 from app.logging_utils import trace_id_var
+from app.store import SearchResult
 from app.traces import (
     AnnotationStatus,
     GenerateStep,
@@ -69,10 +70,15 @@ _TRACES_PAGE_STYLE = """
     /* middle pane: trace steps */
     .middle-pane { flex: 1; overflow-y: auto; padding: 1.5rem; }
     .trace-question { background: #fff; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; box-shadow: 0 1px 4px rgba(0,0,0,.08); font-size: 0.9rem; }
-    details.step { background: #fff; border-radius: 8px; padding: 0.75rem 1.25rem; margin-bottom: 1rem; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
-    details.step summary { font-size: 0.9rem; font-weight: 700; cursor: pointer; }
-    details.step > *:not(summary) { margin-top: 0.6rem; }
-    .step pre { white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; background: #f7f8fc; border-radius: 6px; padding: 0.6rem; }
+    .rewrite-line { font-size: 0.8rem; color: #555; margin-bottom: 1rem; }
+    .detail-section, details.prompt { background: #fff; border-radius: 8px; padding: 0.75rem 1.25rem; margin-bottom: 1rem; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    .section-title, details.prompt > summary { font-size: 0.9rem; font-weight: 700; }
+    .detail-section.answer { border-left: 4px solid #147a4a; }
+    .detail-section.answer pre { font-size: 0.9rem; background: none; padding: 0; margin-top: 0.5rem; }
+    .empty-output { color: #999; font-style: italic; font-size: 0.85rem; margin-top: 0.5rem; }
+    details summary { cursor: pointer; }
+    details.more-chunks > summary { font-size: 0.78rem; color: #4361ee; margin-top: 0.5rem; }
+    .middle-pane pre { white-space: pre-wrap; word-break: break-word; font-size: 0.8rem; background: #f7f8fc; border-radius: 6px; padding: 0.6rem; margin-top: 0.6rem; }
     .chunk { border-left: 3px solid #4361ee; background: #f7f8fc; border-radius: 6px; padding: 0.5rem 0.7rem; margin-top: 0.4rem; font-size: 0.8rem; }
     .chunk-meta { color: #888; font-size: 0.72rem; margin-bottom: 0.2rem; }
     .error-text { color: #b00020; font-size: 0.8rem; margin-top: 0.4rem; }
@@ -110,39 +116,84 @@ def _status_icon(status: str | None) -> str:
     return '<span class="status-icon unannotated">&ndash;</span>'
 
 
-def _step_html(step: TraceStep) -> str:
-    if isinstance(step, RewriteStep):
-        rows = []
-        if step.original_question:
-            rows.append(f"<pre>original: {html.escape(step.original_question)}</pre>")
-        if step.rewritten_query:
-            rows.append(f"<pre>rewritten: {html.escape(step.rewritten_query)}</pre>")
-        summary = f"Rewrite {_rewrite_status_badge(step.status.value)}"
-        return f'<details class="step" open><summary>{summary}</summary>{"".join(rows)}</details>'
+# Chunks shown open in the detail; the rest sit behind a collapsed "show N more".
+_VISIBLE_CHUNKS = 3
 
-    if isinstance(step, RetrieveStep):
-        rows = []
-        for r in step.results:
-            rows.append(
-                f'<div class="chunk"><div class="chunk-meta">page {r.page} · score {r.score:.4f}</div>'
-                f"{html.escape(r.text)}</div>"
-            )
-        if step.error:
-            rows.append(f'<div class="error-text">{html.escape(step.error)}</div>')
-        summary = f"Retrieve ({len(step.results)} results)"
-        return f'<details class="step" open><summary>{summary}</summary>{"".join(rows)}</details>'
 
-    if isinstance(step, GenerateStep):
-        rows = [
-            f"<pre>{html.escape(step.prompt)}</pre>",
-            f"<pre>{html.escape(step.output)}</pre>",
-        ]
-        if step.error:
-            rows.append(f'<div class="error-text">{html.escape(step.error)}</div>')
-        return f'<details class="step" open><summary>Generate</summary>{"".join(rows)}</details>'
+def _first_step(steps: list[TraceStep], step_type: type) -> TraceStep | None:
+    return next((s for s in steps if isinstance(s, step_type)), None)
 
-    step_type = html.escape(str(getattr(step, "type", "?")))
-    return f'<details class="step" open><summary>Unknown step type: {step_type}</summary></details>'
+
+def _rewrite_line_html(step: RewriteStep) -> str:
+    parts = [f"Rewrite {_rewrite_status_badge(step.status.value)}"]
+    if step.rewritten_query:
+        parts.append(f"rewritten: {html.escape(step.rewritten_query)}")
+    return f'<div class="rewrite-line">{" · ".join(parts)}</div>'
+
+
+def _answer_html(generate: GenerateStep | None, errors: list[tuple[str, str]]) -> str:
+    """The generate Step's output, with every Step error beside it so a
+    failed turn explains itself before any chunk or prompt text."""
+    rows = []
+    if generate is None:
+        rows.append('<div class="empty-output">(no generate Step)</div>')
+    elif generate.output:
+        rows.append(f"<pre>{html.escape(generate.output)}</pre>")
+    elif not generate.error:
+        rows.append('<div class="empty-output">(empty output)</div>')
+    for step_type, error in errors:
+        rows.append(f'<div class="error-text">{step_type} error: {html.escape(error)}</div>')
+    return f'<section class="detail-section answer"><div class="section-title">Answer</div>{"".join(rows)}</section>'
+
+
+def _chunk_html(r: SearchResult) -> str:
+    return (
+        f'<div class="chunk"><div class="chunk-meta">page {r.page} · score {r.score:.4f}</div>'
+        f"{html.escape(r.text)}</div>"
+    )
+
+
+def _chunks_html(retrieve: RetrieveStep) -> str:
+    visible = "".join(_chunk_html(r) for r in retrieve.results[:_VISIBLE_CHUNKS])
+    rest = retrieve.results[_VISIBLE_CHUNKS:]
+    more = (
+        f'<details class="more-chunks"><summary>show {len(rest)} more</summary>'
+        f'{"".join(_chunk_html(r) for r in rest)}</details>'
+        if rest
+        else ""
+    )
+    title = f"Retrieved chunks ({len(retrieve.results)})"
+    return f'<section class="detail-section"><div class="section-title">{title}</div>{visible}{more}</section>'
+
+
+def _prompt_html(generate: GenerateStep) -> str:
+    return (
+        f'<details class="prompt"><summary>Prompt ({len(generate.prompt)} chars)</summary>'
+        f"<pre>{html.escape(generate.prompt)}</pre></details>"
+    )
+
+
+def _trace_detail_html(trace: TraceDetail) -> str:
+    """Answer-first reading order: question, rewrite status line, answer
+    (with any Step errors), retrieved chunks, then the collapsed prompt."""
+    rewrite = _first_step(trace.steps, RewriteStep)
+    retrieve = _first_step(trace.steps, RetrieveStep)
+    generate = _first_step(trace.steps, GenerateStep)
+    errors = [
+        (label, step.error)
+        for label, step in (("generate", generate), ("retrieve", retrieve))
+        if step is not None and step.error
+    ]
+
+    parts = [f'<div class="trace-question">{html.escape(trace.question)}</div>']
+    if rewrite is not None:
+        parts.append(_rewrite_line_html(rewrite))
+    parts.append(_answer_html(generate, errors))
+    if retrieve is not None:
+        parts.append(_chunks_html(retrieve))
+    if generate is not None:
+        parts.append(_prompt_html(generate))
+    return "".join(parts)
 
 
 def _page_shell(title: str, header_html: str, body_html: str, *, main_class: str = "") -> str:
@@ -295,9 +346,7 @@ def _traces_page_html(
         middle_html = '<div class="empty">Select a trace to review.</div>'
         right_html = ""
     else:
-        question_html = f'<div class="trace-question">{html.escape(selected.question)}</div>'
-        steps_html = "".join(_step_html(step) for step in selected.steps)
-        middle_html = f"{question_html}{steps_html}"
+        middle_html = _trace_detail_html(selected)
         panel_html = _annotation_panel_html(selected, neighbors or TraceNeighbors(), status_filter)
         right_html = f'<div class="right-pane">{panel_html}</div>'
 
