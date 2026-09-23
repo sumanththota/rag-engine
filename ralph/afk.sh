@@ -56,12 +56,13 @@ for ((i=1; i<=$1; i++)); do
   | jq --unbuffered -rj "$stream_text"
 
   ralph/apply-outcome.sh
-  ralph/promote.sh
+  promoted=$(ralph/promote.sh | tee /dev/stderr | grep -c '^Promoted' || true)
 
   # The host decides when to stop, not the agent: it only sees issues that are
-  # ready now, not the slices its own work just unblocked.
+  # ready now, not the slices its own work just unblocked. GitHub's issue list
+  # lags label edits by a few seconds, so never stop right after promoting.
   remaining=$(gh issue list --label ready-for-agent --state open --json number --jq length)
-  if [[ "$remaining" == "0" ]]; then
+  if [[ "$remaining" == "0" && "$promoted" == "0" ]]; then
     echo "Ralph complete after $i iterations: nothing is ready-for-agent."
     exit 0
   fi
