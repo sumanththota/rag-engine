@@ -155,7 +155,7 @@ def test_verify_session_cookie_rejects_garbage():
 
 
 def test_set_session_cookie_attributes_match_spec():
-    # LOOP.md's Context: "Cookie: itsdangerous-signed, HttpOnly, SameSite=Lax,
+    # Issue #9 spec: "Cookie: itsdangerous-signed, HttpOnly, SameSite=Lax,
     # Secure unless APP_ENV=development, sliding 30-day idle expiry."
     from starlette.responses import Response
 

@@ -36,6 +36,8 @@ Use /tdd to complete the task.
 
 # FEEDBACK LOOPS
 
+First, if `.venv` is missing or broken (it is never portable across machines/sandboxes), run `uv sync` and confirm `uv run pytest -q` is green before touching code.
+
 Before committing, run the feedback loops:
 
 - `uv run pytest -q` to run the tests (the only feedback loop this repo has; no mypy/ruff configured)

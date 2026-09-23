@@ -1,11 +1,11 @@
 """HTTP-level thread persistence tests for ticket #11 (persist-threads).
 
-Per ticket #11 and LOOP.md verify_via fields, these tests exercise the full HTTP
+Per ticket #11's acceptance criteria, these tests exercise the full HTTP
 surface (POST /chat/start, GET /chat/stream, GET /threads, DELETE /threads/{id})
 through AsyncClient, not ThreadStore methods directly. Thread persistence only
 means something when tested end-to-end through the real API contract.
 
-Test literals use test-11-* prefix to avoid collisions with parallel worktrees
+Test literals use test-11-* prefix to avoid collisions with other suites
 on the shared dev Postgres.
 """
 
@@ -309,14 +309,14 @@ async def test_conversation_persists_across_turns_and_devices():
 
 # ---- Criterion 1: Thread_id round-trip through chat_start -> client state -> next turn ----
 # (superseded by test_conversation_persists_across_turns_and_devices above, which drives
-# two real turns and asserts the round-trip unconditionally — see round-4 verifier
+# two real turns and asserts the round-trip unconditionally — see review round 4
 # Finding 3: this test's single-turn check sat behind `if first_thread_id:` and its
 # name promised coverage — "persists_across_turns" — it never actually exercised.
 # Removed rather than patched, since the fixed test already supersedes it in full.)
 
 
 # ---- SECURITY: write-side ownership (CONVENTIONS.md §7) ----------------------
-# Round-4 verifier Finding 1: chat_start reused ANY thread_id it was given with no
+# Review round 4 (Finding 1): chat_start reused ANY thread_id it was given with no
 # ownership check, and write_threads() had no user_id/deleted_at guard on the write
 # path (only reads were filtered by owner) — so User B could inject messages into
 # User A's Thread, and User A would then see B's content in their own conversation.
@@ -435,7 +435,7 @@ async def test_cross_user_cannot_write_into_another_users_thread():
 
 
 async def test_cannot_write_into_soft_deleted_thread():
-    """Same hole, same cause (round-4 verifier Finding 1): reusing a thread_id
+    """Same hole, same cause (review round 4, Finding 1): reusing a thread_id
     must also fail once that thread is soft-deleted — a client that still has
     the old id (e.g. a stale tab) must not be able to resurrect writes into it."""
     pool = await _pool()
@@ -710,12 +710,12 @@ async def test_anonymous_chat_does_not_write_threads():
     thread_messages, and must not receive a thread_id — including when a request
     names a REAL, existing thread_id directly on /chat/stream.
 
-    Round-4 verifier Finding 2: the prior version of this test never called
+    Review round 4 (Finding 2): the prior version of this test never called
     /chat/stream (only /chat/start, which alone writes nothing) and never counted
     rows; its one thread_id assertion also sat behind `if match:` (CONVENTIONS.md
     §7). Fixed in the previous round by driving /chat/stream and counting rows.
 
-    Round-5 verifier Finding A: that fix was still unfalsifiable — it spoofed
+    Review round 5 (Finding A): that fix was still unfalsifiable — it spoofed
     thread_id=999999999, an id that can never exist, so (a) a mutant where
     anonymous /chat/stream writes into a supplied thread_id passes anyway (the
     write fails silently, thread_id refers to nothing), and (b) a mutant where
@@ -848,14 +848,14 @@ async def test_anonymous_chat_does_not_write_threads():
         await pool.close()
 
 
-# ---- Round-5 verifier Finding B: oversized thread_id must 404, not crash -----
+# ---- Review round 5 (Finding B): oversized thread_id must 404, not crash -----
 
 
 async def test_oversized_thread_id_returns_404_not_500():
     """An out-of-range thread_id (too large for Postgres bigint) must be
     rejected with 404, not crash the whole turn with an unhandled 500.
 
-    Round-5 verifier Finding B: the ownership-check call site around
+    Review round 5 (Finding B): the ownership-check call site around
     thread_store.get_thread() only caught ValueError (from int() rejecting
     non-numeric input) — a numeric-but-out-of-range id parses fine in Python
     (arbitrary precision ints) but raises ThreadsError once it hits Postgres,
@@ -916,13 +916,13 @@ async def test_oversized_thread_id_returns_404_not_500():
 async def test_get_and_delete_thread_oversized_id_returns_404_not_500():
     """Same bug, same fix, on the other two routes that take a thread_id.
 
-    Round-6 verifier NEEDS_WORK: /chat/start and /chat/stream were fixed to
+    Review round 6 (NEEDS_WORK): /chat/start and /chat/stream were fixed to
     return 404 for an out-of-bigint-range thread_id, but GET /threads/{id} and
     DELETE /threads/{id} still return 500 for the same input — this is the
     second route pair to need this exact fix after the first only covered two
     of four routes. This test pins BOTH routes and BOTH the maximum valid
     bigint boundary (max+1) and a grossly oversized value, matching the
-    verifier's own probe inputs, so a fix that only handles one shape (e.g.
+    reviewer's own probe inputs, so a fix that only handles one shape (e.g.
     only the grossly-oversized string, not the off-by-one boundary) still
     fails it."""
     pool = await _pool()
@@ -1497,7 +1497,7 @@ async def test_get_thread_orders_messages_with_id_tiebreaker():
 
 
 async def test_sync_threads_respects_ownership():
-    """Criterion 5 (ORCHESTRATOR-ADDED): /threads/sync only ever writes to the
+    """Criterion 5 (review-added): /threads/sync only ever writes to the
     CALLER's own user_id (from session cookie), never a client-supplied one.
     ATTACKER PERSPECTIVE: User A cannot target another user's threads via a crafted
     payload. Seed a real thread for user B, have user A sync a client_thread_id that
@@ -1579,8 +1579,8 @@ async def test_sync_threads_respects_ownership():
             assert data_a["title"] == "User A's Thread (spoofed title)"
 
             # Attempt to spoof ownership via an extra client-supplied field — the route must
-            # ignore it and always use the session-derived user (mutation_target: user_id
-            # sourced from _get_current_user_optional, never the request body). Verifier
+            # ignore it and always use the session-derived user (user_id
+            # sourced from _get_current_user_optional, never the request body). Review
             # round 1 finding: without this, a mutation reading a body-supplied user_id
             # survives, because no existing test ever sends one.
             spoofed_thread = {

@@ -24,3 +24,9 @@ Removed from live files (restore by hand if the protocol returns):
 - GitHub labels `agent:gate-pending`, `agent:in-progress` deleted; `agent:verified` kept (still on closed #9-#12, #18).
 
 User-level skills `flp-doc-sync`, `flp-reshape`, `loop-me` live in `~/.claude/skills/` and are global, not part of this repo.
+- Test comments scrubbed of FLP jargon (LOOP.md, round-N verifier, ORCHESTRATOR-ADDED).
+- Local branches `flp/driver`, `flp/verifier-planner-sonnet`, `docs/flp-manual-update`,
+  `docs/feature-list-progress` and the `../rag-engine-flp-driver` worktree deleted.
+  Local tags `archive/<branch>` keep them; `archive/flp/driver` includes a WIP commit
+  snapshotting the worktree's uncommitted `.loop/32`, `.loop/bin`, `drive.sh` edits.
+  `git switch -c <branch> archive/<branch>` to restore.
