@@ -24,6 +24,7 @@ import html
 import json
 import logging
 import re
+import urllib.parse
 import uuid
 
 import asyncpg
@@ -1373,3 +1374,190 @@ async def test_36_suggested_tags_are_escaped():
     panel = resp.text.split('<div class="right-pane">', 1)[1]
     assert raw not in panel
     assert raw in _suggested_tags(resp.text)
+
+
+# ---- Issue 37: filter by tag, search the question, and paginate ----
+#
+# Reuses _IsolatedTraces' throwaway schema: the tag/search/pagination totals
+# are table-wide, so the shared dev table's real Traces would skew them.
+
+async def _question_37(fx: _IsolatedTraces, trace_id: str, question: str) -> None:
+    await fx.pool.execute("UPDATE traces SET question = $2 WHERE trace_id = $1", trace_id, question)
+
+
+async def _seed_37_needles(fx: _IsolatedTraces, n: int) -> list[str]:
+    """n extra unannotated Traces, newer than every seeded one, whose
+    question contains "test-37 NEEDLE". Returned newest first."""
+    ids = [f"test-37-n{i:03d}" for i in range(n)]
+    for i, trace_id in enumerate(ids):
+        await fx.store.write(trace_id, f"test-37 NEEDLE {i}", [])
+        await fx.pool.execute(
+            "UPDATE traces SET created_at = '2026-02-01'::timestamptz + make_interval(mins => $2) "
+            "WHERE trace_id = $1",
+            trace_id,
+            i,
+        )
+    return list(reversed(ids))
+
+
+def _hrefs(body: str, css_class: str) -> list[str]:
+    return [html.unescape(h) for h in re.findall(rf'class="{css_class}" href="([^"]*)"', body)]
+
+
+def _query(url: str) -> dict[str, str]:
+    return dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+
+
+async def test_37_tag_filter_is_an_exact_match():
+    async with _IsolatedTraces() as fx:
+        await _tag_36(fx, fx.pass_id, ["theme:misdirection"])
+        await _tag_36(fx, fx.fail_id, ["theme:misdirection-extra"])
+        await _tag_36(fx, fx.unannotated_ids[0], ["x", "theme:misdirection"])
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get("/traces", params={"tag": "theme:misdirection"})
+
+    assert resp.status_code == 200
+    assert _listed_trace_ids(resp.text) == [fx.unannotated_ids[0], fx.pass_id]
+
+
+async def test_37_question_search_ignores_case():
+    async with _IsolatedTraces() as fx:
+        await _question_37(fx, fx.fail_id, "What about PARKING permits?")
+        await _question_37(fx, fx.unannotated_ids[3], "Where is the parking lot?")
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get("/traces", params={"q": "Parking"})
+
+    assert resp.status_code == 200
+    assert _listed_trace_ids(resp.text) == [fx.unannotated_ids[3], fx.fail_id]
+
+
+async def test_37_status_tag_and_q_must_all_match():
+    async with _IsolatedTraces() as fx:
+        for trace_id in (fx.pass_id, fx.fail_id, fx.unannotated_ids[1], fx.unannotated_ids[2]):
+            await _question_37(fx, trace_id, f"test-37 parking {trace_id}")
+        await _tag_36(fx, fx.fail_id, ["test-37-t"])
+        await _tag_36(fx, fx.unannotated_ids[1], ["test-37-t"])
+        await _tag_36(fx, fx.unannotated_ids[5], ["test-37-t"])
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            both = await client.get("/traces", params={"tag": "test-37-t", "q": "PARKING"})
+            all_three = await client.get(
+                "/traces", params={"status": "unannotated", "tag": "test-37-t", "q": "parking"}
+            )
+
+    assert _listed_trace_ids(both.text) == [fx.unannotated_ids[1], fx.fail_id]
+    assert _listed_trace_ids(all_three.text) == [fx.unannotated_ids[1]]
+
+
+async def test_37_back_next_and_list_links_keep_every_filter():
+    filters = {"status": "unannotated", "tag": "test-37-t", "q": "parking"}
+    async with _IsolatedTraces() as fx:
+        for i in (1, 2, 3):
+            await _question_37(fx, fx.unannotated_ids[i], f"test-37 parking {i}")
+            await _tag_36(fx, fx.unannotated_ids[i], ["test-37-t"])
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get(f"/traces/{fx.unannotated_ids[2]}", params=filters)
+
+    nav = resp.text.split('class="panel-nav"', 1)[1]
+    nav_links = [html.unescape(h) for h in re.findall(r'href="([^"]*)"', nav)]
+    assert [urllib.parse.urlsplit(h).path for h in nav_links] == [
+        f"/traces/{fx.unannotated_ids[3]}",
+        f"/traces/{fx.unannotated_ids[1]}",
+    ]
+    for link in nav_links:
+        assert _query(link) == filters
+    for link in _hrefs(resp.text, "thread-item(?: active)?"):
+        assert _query(link) == filters
+    # Status filter links swap the status but keep tag and q.
+    for link in _hrefs(resp.text, "status-filter(?: active)?"):
+        assert {k: v for k, v in _query(link).items() if k != "status"} == {"tag": "test-37-t", "q": "parking"}
+
+
+async def test_37_annotate_redirect_keeps_every_filter():
+    filters = {"status": "unannotated", "tag": "test-37-t", "q": "parking", "page": "1"}
+    async with _IsolatedTraces() as fx:
+        target = fx.unannotated_ids[0]
+        await _question_37(fx, target, "test-37 parking")
+        await _tag_36(fx, target, ["test-37-t"])
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            detail = await client.get(f"/traces/{target}", params=filters)
+            action = html.unescape(re.search(r'<form method="post" action="([^"]+)"', detail.text).group(1))
+            resp = await client.post(action, data={"status": "FAIL", "note": "", "tags": "test-37-t"})
+
+    expected = {"status": "unannotated", "tag": "test-37-t", "q": "parking"}
+    assert _query(action) == expected
+    assert resp.status_code == 303
+    assert urllib.parse.urlsplit(resp.headers["location"]).path == f"/traces/{target}"
+    assert _query(resp.headers["location"]) == expected
+
+
+async def test_37_pagination_shows_ranges_and_keeps_filters():
+    async with _IsolatedTraces() as fx:
+        needles = await _seed_37_needles(fx, 120)
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            page1 = await client.get("/traces", params={"q": "needle"})
+            page2 = await client.get("/traces", params={"q": "needle", "page": "2"})
+            page3 = await client.get("/traces", params={"q": "needle", "page": "3"})
+
+    assert _listed_trace_ids(page1.text) == needles[:50]
+    assert "Showing 1-50 of 120" in page1.text
+    assert _hrefs(page1.text, "page-link newer") == []
+    [older] = _hrefs(page1.text, "page-link older")
+    assert _query(older) == {"q": "needle", "page": "2"}
+
+    assert _listed_trace_ids(page2.text) == needles[50:100]
+    assert "Showing 51-100 of 120" in page2.text
+    [newer] = _hrefs(page2.text, "page-link newer")
+    assert _query(newer) == {"q": "needle"}
+
+    assert _listed_trace_ids(page3.text) == needles[100:]
+    assert "Showing 101-120 of 120" in page3.text
+    assert _hrefs(page3.text, "page-link older") == []
+    # The opened Trace's links stay on page 3.
+    for link in _hrefs(page3.text, "thread-item(?: active)?"):
+        assert _query(link) == {"q": "needle", "page": "3"}
+
+
+async def test_37_page_beyond_the_last_is_an_empty_state_not_an_error():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get("/traces", params={"page": "9"})
+            bogus = await client.get("/traces", params={"page": "abc"})
+
+    assert resp.status_code == 200
+    assert _listed_trace_ids(resp.text) == []
+    assert "No traces on page 9" in resp.text
+    assert bogus.status_code == 200
+    assert len(_listed_trace_ids(bogus.text)) == 50
+
+
+async def test_37_no_match_shows_an_empty_state():
+    async with _IsolatedTraces() as fx:
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get("/traces", params={"q": "test-37 nothing matches this"})
+
+    assert resp.status_code == 200
+    assert _listed_trace_ids(resp.text) == []
+    assert "No traces match" in resp.text
+
+
+async def test_37_search_text_and_tag_are_escaped_when_echoed():
+    raw = '<b>test-37 "x"</b>'
+    async with _IsolatedTraces() as fx:
+        await _tag_36(fx, fx.pass_id, [raw])
+        await _question_37(fx, fx.pass_id, raw)
+        app = _app_for(await _unreachable_rag_service(), trace_store=fx.store)
+        async with _async_client(app) as client:
+            resp = await client.get("/traces", params={"tag": raw, "q": raw})
+
+    assert _listed_trace_ids(resp.text) == [fx.pass_id]
+    sidebar = resp.text.split('<div class="middle-pane">', 1)[0]
+    assert raw not in sidebar
+    assert f'value="{html.escape(raw)}"' in sidebar

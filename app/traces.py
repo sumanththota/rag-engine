@@ -88,16 +88,45 @@ class TraceStatusFilter(str, Enum):
             return cls.ALL
 
 
-# SQL predicate matching TraceStatusFilter's value (bound as a text param),
-# shared by list_recent() and neighbors() so Prev/Next stays inside the list.
-_STATUS_FILTER_SQL = """
-    CASE {param}::text
+class TraceFilter(BaseModel):
+    """Which Traces the Trace list shows: an Annotation status, an exact
+    Annotation tag and a case-insensitive question search, all of which
+    must match. None means that part doesn't filter."""
+
+    status: TraceStatusFilter = TraceStatusFilter.ALL
+    tag: str | None = None
+    q: str | None = None
+
+    @classmethod
+    def parse(cls, status: str | None, tag: str | None, q: str | None) -> "TraceFilter":
+        """From raw query parameters: blank tag/q don't filter."""
+        return cls(
+            status=TraceStatusFilter.parse(status),
+            tag=(tag or "").strip() or None,
+            q=(q or "").strip() or None,
+        )
+
+
+# SQL predicate for a TraceFilter, bound as three params (status value, tag,
+# q) starting at $first; shared by list_recent(), count() and neighbors() so
+# Prev/Next stays inside the filtered list. strpos() over lower() rather than
+# ILIKE, so % and _ in the search text match literally.
+def _filter_sql(first: int) -> str:
+    status, tag, q = (f"${first + i}" for i in range(3))
+    return f"""
+    CASE {status}::text
         WHEN 'unannotated' THEN status IS NULL
         WHEN 'pass' THEN status = 'PASS'
         WHEN 'fail' THEN status = 'FAIL'
         ELSE true
     END
+    AND ({tag}::text IS NULL OR {tag}::text = ANY(tags))
+    AND ({q}::text IS NULL OR strpos(lower(question), lower({q}::text)) > 0)
 """
+
+
+def _filter_params(trace_filter: TraceFilter) -> tuple[str, str | None, str | None]:
+    return trace_filter.status.value, trace_filter.tag, trace_filter.q
 
 
 class TraceSummary(BaseModel):
@@ -153,7 +182,7 @@ class TraceNeighbors(BaseModel):
     """The trace_ids adjacent to a Trace in thread-list order (created_at
     DESC), for the detail page's Prev/Next navigation. None at either end
     of the list, or when the current trace no longer matches the active
-    status filter (e.g. it was just annotated out of the unannotated view)."""
+    TraceFilter (e.g. it was just annotated out of the unannotated view)."""
 
     prev_id: str | None = None
     next_id: str | None = None
@@ -213,20 +242,22 @@ class TraceStore:
             raise TraceError(f"write failed for trace_id={trace_id!r}: {e}") from e
 
     async def list_recent(
-        self, limit: int = 50, status_filter: TraceStatusFilter = TraceStatusFilter.ALL
+        self, limit: int = 50, offset: int = 0, trace_filter: TraceFilter | None = None
     ) -> list[TraceSummary]:
+        trace_filter = trace_filter or TraceFilter()
         try:
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(
                     f"""
                     SELECT trace_id, created_at, question, status
                     FROM traces
-                    WHERE {_STATUS_FILTER_SQL.format(param="$2")}
+                    WHERE {_filter_sql(3)}
                     ORDER BY created_at DESC, trace_id DESC
-                    LIMIT $1
+                    LIMIT $1 OFFSET $2
                     """,
                     limit,
-                    status_filter.value,
+                    offset,
+                    *_filter_params(trace_filter),
                 )
         except _DB_ERRORS as e:
             raise TraceError(f"list_recent failed: {e}") from e
@@ -234,6 +265,19 @@ class TraceStore:
             return [TraceSummary(**dict(row)) for row in rows]
         except (ValidationError, TypeError) as e:
             raise TraceError(f"list_recent failed to parse rows: {e}") from e
+
+    async def count(self, trace_filter: TraceFilter | None = None) -> int:
+        """How many Traces match `trace_filter` — the Trace list's
+        pagination total (unlike counts(), which is table-wide)."""
+        trace_filter = trace_filter or TraceFilter()
+        try:
+            async with self._pool.acquire() as conn:
+                return await conn.fetchval(
+                    f"SELECT COUNT(*) FROM traces WHERE {_filter_sql(1)}",
+                    *_filter_params(trace_filter),
+                )
+        except _DB_ERRORS as e:
+            raise TraceError(f"count failed: {e}") from e
 
     async def counts(self) -> TraceCounts:
         try:
@@ -269,11 +313,10 @@ class TraceStore:
             raise TraceError(f"tag_counts failed: {e}") from e
         return [TagCount(**dict(row)) for row in rows]
 
-    async def neighbors(
-        self, trace_id: str, status_filter: TraceStatusFilter = TraceStatusFilter.ALL
-    ) -> TraceNeighbors:
+    async def neighbors(self, trace_id: str, trace_filter: TraceFilter | None = None) -> TraceNeighbors:
         """Prev/next trace_id in the same order as list_recent's WHERE/ORDER
         BY, so a filtered thread list's Next/Prev stays inside that filter."""
+        trace_filter = trace_filter or TraceFilter()
         try:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchrow(
@@ -284,12 +327,12 @@ class TraceStore:
                             LAG(trace_id) OVER (ORDER BY created_at DESC, trace_id DESC) AS prev_id,
                             LEAD(trace_id) OVER (ORDER BY created_at DESC, trace_id DESC) AS next_id
                         FROM traces
-                        WHERE {_STATUS_FILTER_SQL.format(param="$2")}
+                        WHERE {_filter_sql(2)}
                     ) neighbors
                     WHERE trace_id = $1
                     """,
                     trace_id,
-                    status_filter.value,
+                    *_filter_params(trace_filter),
                 )
         except _DB_ERRORS as e:
             raise TraceError(f"neighbors failed for trace_id={trace_id!r}: {e}") from e
